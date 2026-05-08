@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Linux x64 (musl)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-musl-release
+
+      - uses: taiki-e/install-action@cross
+
+      - name: Build
+        run: cross build --release --target x86_64-unknown-linux-musl
+
+      - name: Package
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          cd target/x86_64-unknown-linux-musl/release
+          tar czf ../../../quicproxy-${VERSION}-linux-x64.tar.gz quicproxy
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quicproxy-${{ github.ref_name }}-linux-x64
+          path: quicproxy-${{ github.ref_name }}-linux-x64.tar.gz
+
+  build-windows:
+    name: Windows x64 (MSVC, static CRT)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msvc-release
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Verify no MSVC runtime DLLs
+        shell: pwsh
+        run: |
+          $exe = "target/x86_64-pc-windows-msvc/release/quicproxy.exe"
+          if (!(Test-Path $exe)) { throw "missing exe: $exe" }
+          $deps = & dumpbin /DEPENDENTS $exe | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ -ne "" }
+          $forbidden = $deps | Select-String -Pattern "VCRUNTIME|MSVCP" -CaseSensitive:$false
+          if ($forbidden) {
+            $deps | ForEach-Object { Write-Host $_ }
+            throw "found forbidden runtime dll dependency"
+          }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/x86_64-pc-windows-msvc/release/quicproxy.exe -DestinationPath quicproxy-${{ github.ref_name }}-windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quicproxy-${{ github.ref_name }}-windows-x64
+          path: quicproxy-${{ github.ref_name }}-windows-x64.zip
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: quicproxy-${{ github.ref_name }}-linux-x64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: quicproxy-${{ github.ref_name }}-windows-x64
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            quicproxy-${{ github.ref_name }}-linux-x64.tar.gz
+            quicproxy-${{ github.ref_name }}-windows-x64.zip
+          generate_release_notes: true

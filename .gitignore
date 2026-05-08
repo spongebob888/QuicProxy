@@ -1,0 +1,10 @@
+/target
+/dist
+/build
+/quicproxy_flutter
+/src/premium
+cache.db
+remote.mmdb
+*~
+[._]*.un~
+.DS_Store

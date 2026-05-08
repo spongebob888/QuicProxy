@@ -1,0 +1,107 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-msvc:
+    name: windows (msvc, static runtime)
+    if: ${{ contains(join(github.event.commits.*.message, '\n'), 'deploy') }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msvc
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Verify no MSVC runtime DLLs
+        shell: pwsh
+        run: |
+          $exe = "target/x86_64-pc-windows-msvc/release/quicproxy.exe"
+          if (!(Test-Path $exe)) { throw "missing exe: $exe" }
+          $deps = & dumpbin /DEPENDENTS $exe | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ -ne "" }
+          $forbidden = $deps | Select-String -Pattern "VCRUNTIME|MSVCP" -CaseSensitive:$false
+          if ($forbidden) {
+            $deps | ForEach-Object { Write-Host $_ }
+            throw "found forbidden runtime dll dependency"
+          }
+          & $exe --help | Out-Null
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+
+      - name: Install Flutter dependencies
+        working-directory: ./quicproxy_flutter
+        run: flutter pub get
+
+      - name: Sync core version to Flutter code
+        shell: pwsh
+        run: |
+          # Read version from Cargo.toml
+          $cargoToml = Get-Content "Cargo.toml" -Raw
+          if ($cargoToml -match 'version\s*=\s*"([^"]+)"') {
+            $version = $matches[1]
+            $versionStr = "v$version"
+          } else {
+            throw "Failed to extract version from Cargo.toml"
+          }
+          
+          # Update version in vpn_service.dart
+          $vpnServicePath = "quicproxy_flutter/lib/services/vpn_service.dart"
+          $content = Get-Content $vpnServicePath -Raw
+          $updatedContent = $content -replace 'static const String currentCoreVersion = ''[^'']+'';', "static const String currentCoreVersion = '$versionStr';"
+          Set-Content -Path $vpnServicePath -Value $updatedContent -NoNewline
+
+      - name: Build Flutter Windows
+        working-directory: ./quicproxy_flutter
+        run: flutter build windows
+
+      - name: Copy core.exe to Flutter build directory
+        shell: pwsh
+        run: |
+          # Read version from Cargo.toml
+          $cargoToml = Get-Content "Cargo.toml" -Raw
+          if ($cargoToml -match 'version\s*=\s*"([^"]+)"') {
+            $version = $matches[1]
+            $versionDir = "v$version"
+          } else {
+            throw "Failed to extract version from Cargo.toml"
+          }
+          
+          $exe = "target/x86_64-pc-windows-msvc/release/quicproxy.exe"
+          $destDir = "quicproxy_flutter/build/windows/x64/runner/Release/core_workspace/$versionDir"
+          New-Item -ItemType Directory -Path $destDir -Force
+          $dest = Join-Path $destDir "quicproxy_core.exe"
+          Copy-Item -Path $exe -Destination $dest -Force
+
+      - name: Compile Inno Setup Installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" ./assets/windows_setup.iss
+
+      - name: Upload Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuicProxy-Windows-Setup
+          path: Output/QuicProxy-Windows-Setup.exe
+          if-no-files-found: error

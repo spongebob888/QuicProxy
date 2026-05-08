@@ -1,0 +1,464 @@
+use bytesize::ByteSize;
+use dashmap::DashMap;
+use serde::{Serialize, Serializer};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use tokio::sync::OnceCell;
+use tracing::info;
+
+use crate::utils::format_us;
+use crate::utils::shutdown;
+use crate::utils::system::get_memory_usage;
+
+fn serialize_atomic_u64<S>(val: &AtomicU64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_u64(val.load(Ordering::Relaxed))
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConnectionTracker {
+    pub id: String,
+    pub inbound_tag: String,
+    pub outbound_tag: String,
+    pub matched_rule_index: Option<usize>,
+    pub dst: String,
+    pub ip: String,
+    pub is_fakeip: bool,
+    pub is_udp: bool,
+    #[serde(serialize_with = "serialize_atomic_u64")]
+    pub upload: AtomicU64,
+    #[serde(serialize_with = "serialize_atomic_u64")]
+    pub download: AtomicU64,
+    pub start_time: u64,
+}
+
+impl ConnectionTracker {
+    pub fn inc_upload(&self, bytes: u64) {
+        self.upload.fetch_add(bytes, Ordering::Relaxed);
+    }
+    pub fn inc_download(&self, bytes: u64) {
+        self.download.fetch_add(bytes, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug)]
+pub struct Stats {
+    active_tcp_conns: AtomicU64,
+    active_udp_conns: AtomicU64,
+    total_tcp_conns: AtomicU64,
+    total_udp_conns: AtomicU64,
+    upload_bytes: AtomicU64,
+    download_bytes: AtomicU64,
+    // DNS stats (global)
+    dns_total_time_us: AtomicU64,
+    dns_query_count: AtomicU64,
+    // Route stats (global)
+    route_total_time_us: AtomicU64,
+    route_match_count: AtomicU64,
+    // Latency (for outbounds)
+    latency_total_us: AtomicU64,
+    latency_count: AtomicU64,
+}
+
+impl Default for Stats {
+    fn default() -> Self {
+        Self {
+            active_tcp_conns: AtomicU64::new(0),
+            active_udp_conns: AtomicU64::new(0),
+            total_tcp_conns: AtomicU64::new(0),
+            total_udp_conns: AtomicU64::new(0),
+
+            upload_bytes: AtomicU64::new(0),
+            download_bytes: AtomicU64::new(0),
+
+            dns_total_time_us: AtomicU64::new(0),
+            dns_query_count: AtomicU64::new(0),
+
+            route_total_time_us: AtomicU64::new(0),
+            route_match_count: AtomicU64::new(0),
+
+            latency_total_us: AtomicU64::new(0),
+            latency_count: AtomicU64::new(0),
+        }
+    }
+}
+
+impl Stats {
+    pub fn get_latency_us(&self) -> u64 {
+        let count = self.latency_count.load(Ordering::Relaxed);
+        if count == 0 {
+            0
+        } else {
+            self.latency_total_us.load(Ordering::Relaxed) / count
+        }
+    }
+
+    pub fn record_latency_us(&self, us: u64) {
+        self.latency_total_us.fetch_add(us, Ordering::Relaxed);
+        self.latency_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn get_upload_bytes(&self) -> u64 {
+        self.upload_bytes.load(Ordering::Relaxed)
+    }
+    pub fn get_download_bytes(&self) -> u64 {
+        self.download_bytes.load(Ordering::Relaxed)
+    }
+    pub fn get_active_tcp_conns(&self) -> u64 {
+        self.active_tcp_conns.load(Ordering::Relaxed)
+    }
+    pub fn get_active_udp_sessions(&self) -> u64 {
+        self.active_udp_conns.load(Ordering::Relaxed)
+    }
+    pub fn get_total_tcp_conns(&self) -> u64 {
+        self.total_tcp_conns.load(Ordering::Relaxed)
+    }
+    pub fn get_total_udp_conns(&self) -> u64 {
+        self.total_udp_conns.load(Ordering::Relaxed)
+    }
+    pub fn get_dns_avg_time_us(&self) -> u64 {
+        let count = self.dns_query_count.load(Ordering::Relaxed);
+        if count == 0 {
+            0
+        } else {
+            self.dns_total_time_us.load(Ordering::Relaxed) / count
+        }
+    }
+    pub fn get_route_avg_time_us(&self) -> u64 {
+        let count = self.route_match_count.load(Ordering::Relaxed);
+        if count == 0 {
+            0
+        } else {
+            self.route_total_time_us.load(Ordering::Relaxed) / count
+        }
+    }
+
+    pub fn add_traffic(&self, upload: u64, download: u64) {
+        self.upload_bytes.fetch_add(upload, Ordering::Relaxed);
+        self.download_bytes.fetch_add(download, Ordering::Relaxed);
+    }
+
+    pub fn record_dns_time(&self, duration_us: u64) {
+        self.dns_total_time_us
+            .fetch_add(duration_us, Ordering::Relaxed);
+        self.dns_query_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_route_time(&self, duration_us: u64) {
+        self.route_total_time_us
+            .fetch_add(duration_us, Ordering::Relaxed);
+        self.route_match_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_active_tcp(&self) {
+        self.active_tcp_conns.fetch_add(1, Ordering::Relaxed);
+        self.total_tcp_conns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn dec_active_tcp(&self) {
+        self.active_tcp_conns.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_active_udp(&self) {
+        self.active_udp_conns.fetch_add(1, Ordering::Relaxed);
+        self.total_udp_conns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn dec_active_udp(&self) {
+        self.active_udp_conns.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_upload(&self, bytes: u64) {
+        self.upload_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    pub fn inc_download(&self, bytes: u64) {
+        self.download_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug)]
+pub struct NodeStats {
+    pub tag: String,
+    pub protocol: String,
+    pub stats: Arc<Stats>,
+}
+
+use crate::proxy::SessionCloser;
+
+pub struct Observer {
+    inbounds: DashMap<String, Arc<NodeStats>>,
+    outbounds: DashMap<String, Arc<NodeStats>>,
+    global_stats: Arc<Stats>,
+    connections: DashMap<String, Arc<ConnectionTracker>>,
+    closers: DashMap<String, Arc<SessionCloser>>,
+    mem_stats: Mutex<(u64, u64, u64)>,
+}
+
+impl Observer {
+    pub fn new() -> Self {
+        Self {
+            inbounds: DashMap::new(),
+            outbounds: DashMap::new(),
+            global_stats: Arc::new(Stats::default()),
+            connections: DashMap::new(),
+            closers: DashMap::new(),
+            mem_stats: Mutex::new((0, 0, 0)),
+        }
+    }
+
+    pub fn add_connection(
+        &self,
+        conn: ConnectionTracker,
+        closer: Arc<SessionCloser>,
+    ) -> Arc<ConnectionTracker> {
+        let tracker = Arc::new(conn);
+        self.connections.insert(tracker.id.clone(), tracker.clone());
+        self.closers.insert(tracker.id.clone(), closer);
+        tracker
+    }
+
+    pub fn remove_connection(&self, id: &str) {
+        self.connections.remove(id);
+        self.closers.remove(id);
+    }
+
+    pub fn kill_connection(&self, id: &str) {
+        if let Some(closer) = self.closers.get(id) {
+            closer.close();
+        }
+    }
+
+    pub fn kill_all_connections(&self) {
+        for closer in self.closers.iter() {
+            closer.close();
+        }
+    }
+
+    pub fn get_all_connections(&self) -> Vec<Arc<ConnectionTracker>> {
+        self.connections.iter().map(|r| r.value().clone()).collect()
+    }
+
+    pub fn get_global_stats(&self) -> Arc<Stats> {
+        self.global_stats.clone()
+    }
+
+    pub fn record_dns_time(&self, duration_us: u64) {
+        self.global_stats.record_dns_time(duration_us);
+    }
+
+    pub fn record_route_time(&self, duration_us: u64) {
+        self.global_stats.record_route_time(duration_us);
+    }
+
+    pub fn on_inbound_open_tcp(&self, tag: &str) {
+        if let Some(node) = self.inbounds.get(tag) {
+            node.stats.active_tcp_conns.fetch_add(1, Ordering::Relaxed);
+            node.stats.total_tcp_conns.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn on_inbound_close_tcp(&self, tag: &str) {
+        if let Some(node) = self.inbounds.get(tag) {
+            node.stats.active_tcp_conns.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn on_inbound_open_udp(&self, tag: &str) {
+        if let Some(node) = self.inbounds.get(tag) {
+            node.stats.active_udp_conns.fetch_add(1, Ordering::Relaxed);
+            node.stats.total_udp_conns.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn on_inbound_close_udp(&self, tag: &str) {
+        if let Some(node) = self.inbounds.get(tag) {
+            node.stats.active_udp_conns.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn on_outbound_open_tcp(&self, tag: &str) {
+        if let Some(node) = self.outbounds.get(tag) {
+            node.stats.active_tcp_conns.fetch_add(1, Ordering::Relaxed);
+            node.stats.total_tcp_conns.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn on_outbound_close_tcp(&self, tag: &str) {
+        if let Some(node) = self.outbounds.get(tag) {
+            node.stats.active_tcp_conns.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn on_outbound_open_udp(&self, tag: &str) {
+        if let Some(node) = self.outbounds.get(tag) {
+            node.stats.active_udp_conns.fetch_add(1, Ordering::Relaxed);
+            node.stats.total_udp_conns.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn on_outbound_close_udp(&self, tag: &str) {
+        if let Some(node) = self.outbounds.get(tag) {
+            node.stats.active_udp_conns.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn update_outbound_traffic(&self, tag: &str, upload: u64, download: u64) {
+        if let Some(node) = self.outbounds.get(tag) {
+            node.stats.add_traffic(upload, download);
+        }
+        self.global_stats.add_traffic(upload, download);
+    }
+
+    pub fn update_inbound_traffic(&self, tag: &str, upload: u64, download: u64) {
+        if let Some(node) = self.inbounds.get(tag) {
+            node.stats.add_traffic(upload, download);
+        }
+    }
+
+    // Aliases for compatibility
+    pub fn on_outbound_traffic(&self, tag: &str, upload: u64, download: u64) {
+        self.update_outbound_traffic(tag, upload, download);
+    }
+
+    pub fn on_inbound_traffic(&self, tag: &str, upload: u64, download: u64) {
+        self.update_inbound_traffic(tag, upload, download);
+    }
+
+    pub fn register_inbound(&self, tag: &str, protocol: &str) {
+        if !self.inbounds.contains_key(tag) {
+            self.inbounds.insert(
+                tag.to_string(),
+                Arc::new(NodeStats {
+                    tag: tag.to_string(),
+                    protocol: protocol.to_string(),
+                    stats: Arc::new(Stats::default()),
+                }),
+            );
+        }
+    }
+
+    pub fn register_outbound(&self, tag: &str, protocol: &str) {
+        if !self.outbounds.contains_key(tag) {
+            self.outbounds.insert(
+                tag.to_string(),
+                Arc::new(NodeStats {
+                    tag: tag.to_string(),
+                    protocol: protocol.to_string(),
+                    stats: Arc::new(Stats::default()),
+                }),
+            );
+        }
+    }
+
+    pub fn update_outbound_latency(&self, tag: &str, latency_us: u64) {
+        if let Some(node) = self.outbounds.get(tag) {
+            node.stats.record_latency_us(latency_us);
+        }
+    }
+
+    pub fn get_inbound_stats(&self, tag: &str) -> Option<Arc<NodeStats>> {
+        self.inbounds.get(tag).map(|v| v.clone())
+    }
+
+    pub fn get_outbound_stats(&self, tag: &str) -> Option<Arc<NodeStats>> {
+        self.outbounds.get(tag).map(|v| v.clone())
+    }
+
+    pub fn get_all_inbounds(&self) -> Vec<(String, Arc<NodeStats>)> {
+        self.inbounds
+            .iter()
+            .map(|r| (r.key().clone(), r.value().clone()))
+            .collect()
+    }
+
+    pub fn get_all_outbounds(&self) -> Vec<(String, Arc<NodeStats>)> {
+        self.outbounds
+            .iter()
+            .map(|r| (r.key().clone(), r.value().clone()))
+            .collect()
+    }
+
+    pub fn log_statistics(&self) {
+        info!("--- Statistics ---");
+
+        let log_nodes =
+            |label: &str, nodes: Vec<(String, Arc<NodeStats>)>| {
+                if !nodes.is_empty() {
+                    info!("{}:", label);
+                    for (tag, node) in nodes {
+                        info!(
+                            "  [{}({})]: TCP: {}, UDP: {}, Up: {}, Down: {}, Latency: {}",
+                            tag,
+                            node.protocol,
+                            node.stats.get_active_tcp_conns(),
+                            node.stats.get_active_udp_sessions(),
+                            ByteSize(node.stats.get_upload_bytes()),
+                            ByteSize(node.stats.get_download_bytes()),
+                            format_us(node.stats.get_latency_us())
+                        );
+                    }
+                }
+            };
+
+        log_nodes("Inbounds", self.get_all_inbounds());
+        log_nodes("Outbounds", self.get_all_outbounds());
+
+        let gs = self.get_global_stats();
+        info!("Others:");
+        info!(
+            "  [DNS]: {}, [Router]: {}",
+            format_us(gs.get_dns_avg_time_us()),
+            format_us(gs.get_route_avg_time_us())
+        );
+
+        if let Some(current_mem) = get_memory_usage() {
+            if current_mem > 0 {
+                let mut mem_stats = self.mem_stats.lock().unwrap_or_else(|e| e.into_inner());
+                mem_stats.1 += 1;
+                mem_stats.0 += current_mem;
+                mem_stats.2 = mem_stats.2.max(current_mem);
+                info!(
+                    "  [Memory]: Cur: {}, Avg: {}, Peak: {}",
+                    ByteSize(current_mem),
+                    ByteSize(mem_stats.0 / mem_stats.1),
+                    ByteSize(mem_stats.2)
+                );
+            }
+        }
+        info!("--------------------------");
+    }
+
+    pub fn spawn_periodic_log(self: &Arc<Self>, interval_secs: u64) {
+        let observer = self.clone();
+        shutdown::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                interval_secs,
+            ));
+            loop {
+                interval.tick().await;
+                observer.log_statistics();
+            }
+        });
+    }
+}
+
+static GLOBAL_OBSERVER: OnceCell<Arc<Observer>> = OnceCell::const_new();
+
+pub fn init_observer(cfg: &crate::config::Config) -> anyhow::Result<()> {
+    if let Some(obs_cfg) = cfg.observe.as_ref() {
+        if obs_cfg.enabled {
+            let observer = Arc::new(Observer::new());
+            observer.spawn_periodic_log(obs_cfg.log_interval);
+            let _ = GLOBAL_OBSERVER.set(observer);
+        }
+    }
+    Ok(())
+}
+
+pub fn get_observer() -> Option<Arc<Observer>> {
+    GLOBAL_OBSERVER.get().cloned()
+}

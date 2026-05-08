@@ -1,0 +1,73 @@
+{
+  "inbounds": {
+    "trojan_inbound": {
+      "type": "trojan",
+      "address": "0.0.0.0",
+      "port": 13441,
+      "password": "pwd",
+      "transport": {
+        "type": "tcp"
+      },
+      "tls": {
+        "enable": true
+      }
+    },
+    "shadowquic_inbound": {
+      "type": "shadowquic",
+      "address": "0.0.0.0",
+      "port": 13431,
+      "idle_timeout": 50,
+      "tls": {
+        "enable_jls": true,
+        "jls_username": "user",
+        "jls_password": "pwd",
+        "zero_rtt": false,
+        "sni": "www.apple.com"
+      }
+    }
+  },
+  "outbounds": {
+    "default_server": "direct",
+    "servers": {
+      "direct": {
+        "type": "direct"
+      }
+    }
+  },
+  "cache": {
+    "all_cache": {
+      "memory_size": 1000,
+      "path": "server_cache.db"
+    }
+  },
+  "router": {
+    "default_mode": "rule"
+  },
+  "dns": {
+    "default_server": "local_dns",
+    "servers": {
+      "local_dns": {
+        "type": "udp",
+        "address": "8.8.8.8",
+        "port": 53,
+        "timeout": 10,
+        "outbound": "direct",
+        "strategy": "ipv4_only",
+        "cache": "all_cache"
+      }
+    }
+  },
+  "observe": {
+    "enabled": true,
+    "log_interval": 500
+  },
+  "api": {
+    "address": "127.0.0.1",
+    "password": "",
+    "port": 1235
+  },
+  "log": {
+    "level": "debug",
+    "color": true
+  }
+}

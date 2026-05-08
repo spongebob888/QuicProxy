@@ -1,0 +1,23 @@
+{
+  "inbounds": {
+    "mix_test": {
+      "type": "mix",
+      "address": "127.0.0.1",
+      "port": 0
+    }
+  },
+  "outbounds": {
+    "default_server": "direct_out",
+    "servers": {
+      "direct_out": {
+        "type": "direct"
+      }
+    }
+  },
+  "router": {
+    "default_mode": "proxy"
+  },
+  "log": {
+    "level": "debug"
+  }
+}

@@ -1,0 +1,221 @@
+{
+  "inbounds": {
+    "tun_inbound": {
+      "type": "tun",
+      "tun_address": [
+        "172.19.0.1/24",
+        // "fdfe:dcba:9876::1/126",
+      ],
+      "udp_timeout": 50,
+      "auto_route": true
+    },
+    "mix_inbound": {
+      "type": "mix",
+      "address": "127.0.0.1",
+      "set_system_proxy": false,
+      "port": 1101
+    }
+  },
+  "outbounds": {
+    "final_outbound": "proxy",
+    "servers": {
+      "autoSelect": {
+        "type": "urltest",
+        "default_outbound": "real_sq",
+        "outbounds": [
+          "real_sq",
+        ]
+      },
+      "real_sq": {
+        "type": "shadowquic",
+        "address": "1.1.1.1", // change your address and port.
+        "port": 2344,
+        "idle_timeout": 50,
+        "udp_mod": "datagram",
+        "tls": {
+          "enable_jls": true,
+          "jls_username": "user",
+          "jls_password": "pwd",
+          "zero_rtt": true,
+          "sni": "www.apple.com"
+        }
+      },
+      "hijack_dns_outbound": {
+        "type": "dns",
+        "dns": "fakeip_dns"
+      },
+      "local_dns_outbound": {
+        "type": "dns",
+        "dns": "local_dns"
+      },
+      "remote_dns_outbound": {
+        "type": "dns",
+        "dns": "remote_dns"
+      },
+      "proxy": {
+        "type": "selector",
+        "default_outbound": "real_sq",
+        "cache": "all_cache",
+        "outbounds": [
+          "autoSelect",
+          "real_sq",
+        ]
+      },
+      "direct": {
+        "connect_timeout": 10,
+        "type": "direct"
+      }
+    }
+  },
+  "router": {
+    "default_mode": "rule",
+    "default_server": "proxy",
+    "db": {
+      "online_country": {
+        "type": "online",
+        "path": "remote.mmdb",
+        "url": "https://cdn.jsdelivr.net/gh/Masaiki/GeoIP2-CN@release/Country.mmdb",
+        "download_outbound": "direct",
+        "cache": "all_cache"
+      }
+    },
+    "geoip": {
+      "cn": {
+        "ttl": 300,
+        "db": "online_country",
+        "dns": "local_dns",
+        "ip_country": [
+          "cn"
+        ],
+        "cache": "all_cache"
+      }
+    },
+    "rules": [
+      {
+        "ip_cidr": [
+          "10.0.0.0/8",
+          "172.16.0.0/12",
+          "192.168.0.0/16",
+          "fd00::/8"
+        ],
+        "outbound": "direct"
+      },
+      {
+        "inbounds": [
+          "tun_inbound",
+        ],
+        "mode": ["rule"],
+        "reverse": "fakeip_dns",
+        "outbound": "proxy"
+      },
+      {
+        "inbounds": [
+          "tun_inbound"
+        ],
+        "mode": ["rule"],
+        "protocol": [
+          "dns"
+        ],
+        "geoip": ["cn"],
+        "outbound": "local_dns_outbound"
+      },
+      {
+        "inbounds": [
+          "tun_inbound"
+        ],
+        "protocol": [
+          "dns"
+        ],
+        "mode": ["rule"],
+        "query_type": [
+          "A",
+          "AAAA"
+        ],
+        "outbound": "hijack_dns_outbound"
+      },
+      {
+        "inbounds": [
+          "tun_inbound"
+        ],
+        "protocol": [
+          "dns"
+        ],
+        "mode": ["direct"],
+        "outbound": "local_dns_outbound"
+      },
+      {
+        "inbounds": [
+          "tun_inbound"
+        ],
+        "protocol": [
+          "dns"
+        ],
+        "outbound": "remote_dns_outbound"
+      },
+      {
+        "mode": ["direct"],
+        "outbound": "direct"
+      },
+      {
+        "mode": ["rule"],
+        "geoip": ["cn"],
+        "outbound": "direct"
+      }
+    ]
+  },
+  "dns": {
+    "default_server": "local_dns",
+    "servers": {
+      "remote_dns": {
+        "type": "udp",
+        "address": "8.8.8.8",
+        "port": 53,
+        "min_ttl": 500,
+        "timeout": 10,
+        "outbound": "proxy",
+        "strategy": "ipv4_only",
+        "cache": "all_cache"
+      },
+      "fakeip_dns": {
+        "type": "fakeip",
+        "reject_ipv6": true,
+        "range": [
+          "198.18.0.0/15",
+          "fc00::/18"
+        ],
+        "min_ttl": 60,
+        "cache": "all_cache"
+      },
+      "local_dns": {
+        "type": "https",
+        // "reject_ipv6": true,
+        "address": "223.5.5.5",
+        "port": 443,
+        "min_ttl": 500,
+        "timeout": 10,
+        "outbound": "direct",
+        "cache": "all_cache"
+      }
+    }
+  },
+  "cache": {
+    "all_cache": {
+      "memory_size": 100,
+      "path": "cache.db"
+    }
+  },
+  "observe": {
+    "enabled": true,
+    "log_interval": 15
+  },
+  "api": {
+    "address": "127.0.0.1",
+    "password": "",
+    "port": 1235
+  },
+  "log": {
+    "level": "debug",
+    "backtrace": "off",   // 可选: "off" | "on" | "full"，默认 "on"
+    "color": true
+  }
+}

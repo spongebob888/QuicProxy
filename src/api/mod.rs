@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tracing::{error, info};
 
-use crate::proxy::outbound::OUTBOUNDS_MAP;
+use crate::proxy::outbound::{OUTBOUNDS_MAP, get_outbound_by_tag};
 use crate::proxy::{
     observe::{Observer, get_observer},
     router::get_router,
@@ -342,14 +342,8 @@ struct TraceResponse {
 struct RequestParams {
     tag: String,
     url: String,
-    #[serde(default = "default_timeout")]
-    timeout: u64,
     #[serde(default = "default_max_redirects")]
     max_redirects: usize,
-}
-
-fn default_timeout() -> u64 {
-    10
 }
 
 fn default_max_redirects() -> usize {
@@ -372,17 +366,14 @@ async fn get_trace(
     check_auth(&headers, &state.password)?;
 
     let start = std::time::Instant::now();
-    let outbound = OUTBOUNDS_MAP
-        .get(&params.tag)
-        .map(|e| e.value().clone())
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let outbound = get_outbound_by_tag(&params.tag);
 
     let response = request_via_outbound(
         outbound.clone(),
         Method::GET,
         "https://www.cloudflare.com/cdn-cgi/trace",
-        std::time::Duration::from_secs(10),
-        2,
+        outbound.connect_timeout(),
+        3,
         None,
     )
     .await
@@ -422,6 +413,7 @@ async fn get_trace(
     }
 
     let duration_ms = start.elapsed().as_millis() as u64;
+    state.observer.update_outbound_latency(&params.tag, duration_ms * 1000);
     Ok(Json(TraceResponse {
         ip,
         loc,
@@ -436,17 +428,14 @@ async fn get_request(
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&headers, &state.password)?;
 
-    let outbound = OUTBOUNDS_MAP
-        .get(&params.tag)
-        .map(|e| e.value().clone())
-        .ok_or(StatusCode::NOT_FOUND)?;
-
     let start = std::time::Instant::now();
+    let outbound = get_outbound_by_tag(&params.tag);
+
     let response = request_via_outbound(
         outbound.clone(),
         Method::GET,
         &params.url,
-        std::time::Duration::from_secs(params.timeout),
+        outbound.connect_timeout(),
         params.max_redirects,
         None,
     )

@@ -116,8 +116,7 @@ pub fn get_outbound_by_tag(tag: &str) -> Arc<dyn AnyOutbound> {
     match OUTBOUNDS_MAP.get(tag) {
         Some(r) => return r.clone(),
         None => {
-            tracing::error!("can not find outbound: {}", tag);
-            std::process::exit(1);
+            panic!("can not find outbound: {}", tag);
         }
     };
 }

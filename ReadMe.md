@@ -34,7 +34,7 @@
 
 对于一条需要代理的 TCP 链接：
 
-- 其他 TCP 方案（例如说 ShadowSocks）：需要先建立 TCP （三次握手，消耗 1.5 RTT），然后建立 TLS （消耗 1 RTT）。
+- 其他 TCP 方案（例如说 Trojan）：需要先建立 TCP （三次握手，消耗 1.5 RTT），然后建立 TLS （消耗 1 RTT）。
 
 - 其他 QUIC 方案（例如说 Hysteria2）：使用已经建立的 Connection 发送 Stream 请求 （无需 RTT），若 Connection 中断则需要 1 RTT 去恢复。
 

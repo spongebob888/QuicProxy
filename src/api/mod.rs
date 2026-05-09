@@ -58,6 +58,7 @@ pub async fn init_api(cfg: &Config) -> Result<Option<tokio::sync::mpsc::Receiver
         )
         .route("/trace", get(get_trace))
         .route("/request", get(get_request))
+        .route("/quit", get(get_quit))
         .with_state(ApiState {
             password: api.password,
             shutdown_tx: shutdown_tx,
@@ -80,22 +81,6 @@ pub async fn init_api(cfg: &Config) -> Result<Option<tokio::sync::mpsc::Receiver
         info!("API server exited");
     });
     Ok(Some(shutdown_rx))
-}
-
-pub fn create_router(state: ApiState) -> Router {
-    Router::new()
-        .route("/observe", get(get_observe))
-        .route("/outbounds", get(get_outbounds))
-        .route("/selector", put(put_selector))
-        .route("/mode", get(get_mode).put(put_mode))
-        .route(
-            "/connections",
-            get(get_connections).delete(delete_connections),
-        )
-        .route("/trace", get(get_trace))
-        .route("/request", get(get_request))
-        .route("/quit", get(post_quit))
-        .with_state(state)
 }
 
 #[derive(Deserialize)]
@@ -332,7 +317,7 @@ async fn put_selector(
     Err(StatusCode::NOT_FOUND)
 }
 
-async fn post_quit(
+async fn get_quit(
     State(state): State<ApiState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
@@ -402,7 +387,10 @@ async fn get_trace(
     )
     .await
     .map_err(|error| {
-        if error.downcast_ref::<tokio::time::error::Elapsed>().is_some() {
+        if error
+            .downcast_ref::<tokio::time::error::Elapsed>()
+            .is_some()
+        {
             StatusCode::GATEWAY_TIMEOUT
         } else {
             StatusCode::BAD_GATEWAY
@@ -464,7 +452,10 @@ async fn get_request(
     )
     .await
     .map_err(|error| {
-        if error.downcast_ref::<tokio::time::error::Elapsed>().is_some() {
+        if error
+            .downcast_ref::<tokio::time::error::Elapsed>()
+            .is_some()
+        {
             StatusCode::GATEWAY_TIMEOUT
         } else {
             StatusCode::BAD_GATEWAY

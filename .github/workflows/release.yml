@@ -15,6 +15,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.PRIVATE_KEY }}
+      - run: git clone git@github.com:PatrickStar555/QuicProxy_flutter.git ./src/premium
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -49,6 +53,10 @@ jobs:
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
       - uses: actions/checkout@v4
+      - uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.PRIVATE_KEY }}
+      - run: git clone git@github.com:PatrickStar555/QuicProxy_flutter.git ./src/premium
 
       - uses: dtolnay/rust-toolchain@stable
         with:

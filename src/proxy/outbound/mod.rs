@@ -49,8 +49,8 @@ pub fn init_outbounds(cfg: &Config) -> anyhow::Result<()> {
 
     fn get_priority(protocol: &str) -> u8 {
         match protocol {
-            "selector" => 1,
-            "urltest" => 2,
+            "selector" => 2,
+            "urltest" => 1,
             _ => 0,
         }
     }

@@ -36,6 +36,7 @@
           "enable_jls": true,
           "jls_username": "user",
           "jls_password": "pwd",
+          "alpn": [],
           "zero_rtt": true,
           "sni": "www.apple.com"
         }

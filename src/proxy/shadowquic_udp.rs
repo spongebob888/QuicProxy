@@ -95,7 +95,7 @@ impl ShadowUdpReceiver {
                                 }
                             }
                             Err(e) => {
-                                debug!("unistream closed: {}", e);
+                                debug!("unistream {} closed: {}", recv_context_id, e);
                                 break;
                             }
                         }
@@ -151,6 +151,7 @@ pub fn run_bistream_recv_listener(
     if let Some(recv_context_id) = recv_context_id {
         context_ids.push(recv_context_id);
         udp_recv_map_clone.insert(recv_context_id, receiver_for_spawn.clone());
+        udp_recv_map_notify.notify_waiters();
     }
 
     let current_span = tracing::Span::current();
@@ -239,7 +240,7 @@ async fn get_receiver(
     let notify_clone = notify.clone();
 
     tokio::select! {
-        _ = tokio::time::sleep(Duration::from_secs(5)) => {
+        _ = tokio::time::sleep(Duration::from_secs(10)) => {
             anyhow::bail!("timeout waiting for receiver");
         }
         result = async {

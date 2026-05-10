@@ -4,6 +4,7 @@ use crate::proxy::outbound::{AnyOutbound, AnyPacket, AnyStream};
 use crate::proxy::{SessionCloser, SourceAddr, TargetAddr};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +19,8 @@ pub struct DirectOutbound {
 
 struct DirectUdpOutbound {
     socket: UdpSocket,
-    dns: Option<String>,
+    target_addr: SocketAddr,
+    // dns: Option<String>,
     closer: Arc<SessionCloser>,
 }
 
@@ -30,17 +32,18 @@ impl AnyPacket for DirectUdpOutbound {
         self.closer.clone()
     }
 
-    async fn send_to(&self, buf: Bytes, target: &TargetAddr, _from: &SourceAddr) -> Result<usize> {
-        let addr = resolve_target(target, self.dns.as_deref()).await?;
+    async fn send_to(&self, buf: Bytes, _target: &TargetAddr, _from: &SourceAddr) -> Result<usize> {
+        // let addr = resolve_target(target, self.dns.as_deref()).await?;
 
         self.socket
-            .send_to(&buf, addr)
+            .send_to(&buf, self.target_addr)
             .await
             .context("send_to failed")
     }
 
     async fn recv_from(&self) -> Result<(SourceAddr, TargetAddr, Bytes)> {
-        let mut buf = BytesMut::with_capacity(1024 * 2);
+        // let mut buf = BytesMut::with_capacity(1024 * 2);
+        let mut buf = BytesMut::with_capacity(65536);
         let (n, addr) = self.socket.recv_buf_from(&mut buf).await?;
         buf.truncate(n);
         Ok((TargetAddr::Ip(addr), TargetAddr::dummy(), buf.freeze()))
@@ -105,7 +108,7 @@ impl AnyOutbound for DirectOutbound {
 
         let inner = Arc::new(DirectUdpOutbound {
             socket,
-            dns: self.dns.clone(),
+            target_addr: addr,
             closer: Arc::new(SessionCloser::new()),
         });
         Ok(inner)

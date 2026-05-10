@@ -507,28 +507,30 @@ impl Router {
                 },
                 res = out_packet_clone.recv_from() => {
                     match res {
-                        Ok((remote_src, _target, packet)) => {
-                            if let Err(e) = in_packet.send_to(packet, &source_addr, &remote_src).await {
-                                info!("UDP session quit because [inbound err: {}]",e);
+                        Ok((_source, _target, packet)) => {
+                            debug!("send {}, from {} to {}", packet.len(), target_addr, source_addr);
+                            if let Err(e) = in_packet.send_to(packet, &source_addr, &target_addr).await {
+                                info!("UDP session quit because [inbound err: {:#}]",e);
                                 break;
                             }
                         }
                         Err(e) => {
-                            info!("UDP session quit because [outbound err: {}]",e);
+                            info!("UDP session quit because [outbound err: {:#}]",e);
                             break;
                         },
                     }
                 },
                 res = in_packet.recv_from() => {
                     match res {
-                        Ok((remote_src, _target, packet)) => {
-                            if let Err(e) = out_packet.send_to(packet, &target_addr, &remote_src).await {
-                                info!("UDP session quit because [outbound err: {}]",e);
+                        Ok((_source, _target, packet)) => {
+                            debug!("send {}, from {} to {}", packet.len(), source_addr, target_addr);
+                            if let Err(e) = out_packet.send_to(packet, &target_addr, &source_addr).await {
+                                info!("UDP session quit because [outbound err: {:#}]",e);
                                 break;
                             }
                         }
                         Err(e) => {
-                            info!("UDP session quit because [inbound err: {}]",e);
+                            info!("UDP session quit because [inbound err: {:#}]",e);
                             break;
                         },
                     }

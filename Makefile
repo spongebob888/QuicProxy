@@ -1,3 +1,9 @@
+test_http3:
+	/opt/homebrew/opt/curl/bin/curl --http3-only https://cloudflare.com
+
+run_test_config: build
+	./target/release/quicproxy --elevate -c ./tests/test_http3.json5
+
 test:
 	cargo test --test socks5_udp_test
 

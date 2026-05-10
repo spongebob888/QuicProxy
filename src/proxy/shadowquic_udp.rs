@@ -1,3 +1,4 @@
+use anyhow::Context;
 use anyhow::bail;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -525,12 +526,17 @@ pub async fn read_request_head(
         bistream.read_exact(&mut cmd_buf).await?;
         let cmd = cmd_buf[0];
 
-        let target = TargetAddr::read_from(bistream).await?;
+        let mut target = TargetAddr::read_from(bistream).await?;
+
+        // UDP 协议需要读取 dummy target
+        if matches!(cmd, 0x03 | 0x04) {
+            target = TargetAddr::read_from(bistream).await?;
+        }
+
         Ok((cmd, target))
     };
 
-    match timeout(duration, handshake).await {
-        Ok(result) => result,
-        Err(e) => bail!(e),
-    }
+    timeout(duration, handshake)
+        .await
+        .context("Handshake timeout")?
 }

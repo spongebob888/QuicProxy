@@ -353,10 +353,11 @@ impl AnyOutbound for ShadowQuicOutbound {
         let mut bistream = Box::new(QuinnBistream::new(send, recv));
 
         let target_bytes = target.to_bytes();
+        let target_bytes_dummy = TargetAddr::dummy().to_bytes();
 
         // send header with control_bistream
         let send_context_id = self.next_context_id.fetch_add(1, Ordering::SeqCst);
-        let mut packet = Vec::with_capacity(1 + target_bytes.len() + 2);
+        let mut packet = Vec::with_capacity(1 + target_bytes.len() + 2 + target_bytes_dummy.len());
         match self.udp_mod {
             UdpMode::OverStream => {
                 packet.push(0x04);
@@ -365,6 +366,7 @@ impl AnyOutbound for ShadowQuicOutbound {
                 packet.push(0x03);
             }
         }
+        packet.extend_from_slice(&target_bytes_dummy);
         packet.extend_from_slice(&target_bytes);
         packet.extend_from_slice(&send_context_id.to_be_bytes());
         bistream.write_all(&packet).await?;

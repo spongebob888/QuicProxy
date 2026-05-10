@@ -1,3 +1,4 @@
+use anyhow::bail;
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -216,75 +217,65 @@ impl AnyInbound for ShadowQuicInbound {
                     let tag_clone = tag.clone();
 
                     tokio::spawn(async move {
-                        let mut is_authed = !auth_hash.is_some();
-                        let mut services_started = false;
+                        let res: anyhow::Result<()> = async {
+                            let mut is_authed = !auth_hash.is_some();
+                            let mut services_started = false;
 
-                        let start_services = || {
-                            start_unistream_listener(
-                                conn_clone.clone(),
-                                udp_recv_map_clone.clone(),
-                                session_timeout_val,
-                            );
-                            start_datagram_loop(
-                                conn_clone.clone(),
-                                udp_recv_map_clone.clone(),
-                                datagram_sender_rx.clone(),
-                            );
-                        };
+                            let start_services = || {
+                                start_unistream_listener(
+                                    conn_clone.clone(),
+                                    udp_recv_map_clone.clone(),
+                                    session_timeout_val,
+                                );
+                                start_datagram_loop(
+                                    conn_clone.clone(),
+                                    udp_recv_map_clone.clone(),
+                                    datagram_sender_rx.clone(),
+                                );
+                            };
 
-                        while conn.close_reason().is_none() {
-                            let conn_clone2 = conn.clone();
-                            match conn_clone2.accept_bi().await {
-                                Ok((send, recv)) => {
-                                    let mut bistream = Box::new(QuinnBistream::new(send, recv));
-                                    if !is_authed {
-                                        if let Some(auth_hash) = auth_hash {
-                                            match auth_sunnyquic(
-                                                &mut bistream,
-                                                auth_hash,
-                                                session_timeout_val,
-                                            )
-                                            .await
-                                            {
-                                                Ok(_) => {
-                                                    is_authed = true;
-                                                    info!("Sunnyquic auth ok");
-                                                    continue;
-                                                }
-                                                Err(e) => {
-                                                    error!("auth failed: {:#}", e);
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
+                            while conn.close_reason().is_none() {
+                                let conn_clone2 = conn.clone();
+                                let (send, recv) = conn_clone2
+                                    .accept_bi()
+                                    .await
+                                    .context("QUIC accept_bi error")?;
 
-                                    if !services_started {
-                                        start_services();
-                                        services_started = true;
-                                    }
-
-                                    let tag = tag_clone.clone();
-                                    let router = router_clone.clone();
-                                    let udp_recv_map_clone = udp_recv_map_clone.clone();
-                                    let datagram_sender_tx = datagram_sender_tx.clone();
-                                    let send_context_id = next_context_id.clone();
-                                    let remote_addr = conn_clone2.remote_address().to_string();
-
-                                    info!("Accepted proxy request from bistream");
-                                    tokio::spawn(async move {
-                                        let (cmd, target) = match read_request_head(
+                                let mut bistream = Box::new(QuinnBistream::new(send, recv));
+                                if !is_authed {
+                                    if let Some(auth_hash) = auth_hash {
+                                        auth_sunnyquic(
                                             &mut bistream,
+                                            auth_hash,
                                             session_timeout_val,
                                         )
                                         .await
-                                        {
-                                            Ok(r) => r,
-                                            Err(e) => {
-                                                error!("failed to read header: {}", e);
-                                                return;
-                                            }
-                                        };
+                                        .context("auth failed")?;
+
+                                        is_authed = true;
+                                        info!("Sunnyquic auth ok");
+                                        continue;
+                                    }
+                                }
+
+                                if !services_started {
+                                    start_services();
+                                    services_started = true;
+                                }
+
+                                let tag = tag_clone.clone();
+                                let router = router_clone.clone();
+                                let udp_recv_map_clone = udp_recv_map_clone.clone();
+                                let datagram_sender_tx = datagram_sender_tx.clone();
+                                let send_context_id = next_context_id.clone();
+                                let remote_addr = conn_clone2.remote_address().to_string();
+
+                                info!("Accepted proxy request from bistream");
+                                tokio::spawn(async move {
+                                    let res: anyhow::Result<()> = async {
+                                        let (cmd, target) =
+                                            read_request_head(&mut bistream, session_timeout_val)
+                                                .await?;
 
                                         match cmd {
                                             0x01 => {
@@ -296,13 +287,10 @@ impl AnyInbound for ShadowQuicInbound {
                                                     r = field::Empty,
                                                     o = field::Empty
                                                 );
-                                                if let Err(e) = router
+                                                router
                                                     .dispatch_stream(bistream, &target, &tag)
                                                     .instrument(span)
-                                                    .await
-                                                {
-                                                    error!("failed to route tcp: {:#}", e);
-                                                }
+                                                    .await?;
                                             }
                                             0x03 | 0x04 => {
                                                 let span = info_span!(
@@ -315,7 +303,7 @@ impl AnyInbound for ShadowQuicInbound {
                                                 );
                                                 let context_id =
                                                     send_context_id.fetch_add(1, Ordering::SeqCst);
-                                                if let Err(e) = Self::handle_udp(
+                                                Self::handle_udp(
                                                     if cmd == 0x03 {
                                                         UdpMode::OverDatagram
                                                     } else {
@@ -332,24 +320,29 @@ impl AnyInbound for ShadowQuicInbound {
                                                     session_timeout_val,
                                                 )
                                                 .instrument(span)
-                                                .await
-                                                {
-                                                    error!("failed to route udp: {:#}", e);
-                                                }
+                                                .await?;
                                             }
                                             _ => {
-                                                debug!("wrong bistream cmd.");
-                                                return;
+                                                bail!("wrong bistream cmd.");
                                             }
                                         }
-                                    });
-                                }
-                                Err(e) => {
-                                    error!("QUIC accept_bi error: {}", e);
-                                    break;
-                                }
+                                        Ok(())
+                                    }
+                                    .await;
+
+                                    if let Err(e) = res {
+                                        error!("proxy request error: {:#}", e);
+                                    }
+                                });
                             }
+                            Ok(())
                         }
+                        .await;
+
+                        if let Err(e) = res {
+                            error!("QUIC conn error: {:#}", e);
+                        }
+
                         conn.close(VarInt::from_u64(263).unwrap(), &[]);
                         debug!("QUIC conn closed",);
                     });

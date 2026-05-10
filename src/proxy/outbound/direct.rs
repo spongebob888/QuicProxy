@@ -42,8 +42,7 @@ impl AnyPacket for DirectUdpOutbound {
     }
 
     async fn recv_from(&self) -> Result<(SourceAddr, TargetAddr, Bytes)> {
-        // let mut buf = BytesMut::with_capacity(1024 * 2);
-        let mut buf = BytesMut::with_capacity(65536);
+        let mut buf = BytesMut::with_capacity(1024 * 2);
         let (n, addr) = self.socket.recv_buf_from(&mut buf).await?;
         buf.truncate(n);
         Ok((TargetAddr::Ip(addr), TargetAddr::dummy(), buf.freeze()))

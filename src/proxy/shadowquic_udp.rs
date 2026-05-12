@@ -264,19 +264,29 @@ pub fn start_unistream_listener(
                     let recv_map_notify_clone = udp_recv_map_notify.clone();
 
                     tokio::spawn(async move {
-                        let recv_context_id =
-                            try_get_recv_context_id(&mut recv, read_timeout).await?;
-                        let item =
-                            get_receiver(recv_map_clone, recv_context_id, recv_map_notify_clone)
-                                .await?;
+                        let res: anyhow::Result<()> = async {
+                            let recv_context_id =
+                                try_get_recv_context_id(&mut recv, read_timeout).await?;
+                            let item = get_receiver(
+                                recv_map_clone,
+                                recv_context_id,
+                                recv_map_notify_clone,
+                            )
+                            .await?;
 
-                        item.run_unistream_worker(
-                            Arc::new(Mutex::new(recv)),
-                            remote_src.clone(),
-                            recv_context_id,
-                        );
+                            item.run_unistream_worker(
+                                Arc::new(Mutex::new(recv)),
+                                remote_src.clone(),
+                                recv_context_id,
+                            );
 
-                        anyhow::Ok(())
+                            Ok(())
+                        }
+                        .await;
+
+                        if let Err(e) = res {
+                            error!("unistream worker error: {:#}", e);
+                        }
                     });
                 }
                 Err(e) => {

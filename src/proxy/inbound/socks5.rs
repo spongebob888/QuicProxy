@@ -1,11 +1,11 @@
 use crate::config::InboundConfig;
-use anyhow::Context;
 use crate::proxy::inbound::{AnyInbound, create_tcp_listener, setup_system_proxy};
 use crate::proxy::outbound::AnyPacket;
 use crate::proxy::router::{Router, get_router, start_udp_loop};
 use crate::proxy::{SourceAddr, TargetAddr};
 use crate::utils::new_io_timeout_error;
 use crate::utils::{format_duration, new_io_other_error, now};
+use anyhow::Context;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use serde::Deserialize;
@@ -89,66 +89,73 @@ impl AnyInbound for Socks5Inbound {
             let start_time = now();
             let tag_clone = tag.clone();
             let local_addr = socket.local_addr().ok();
-            let span = info_span!(
-                "socks5",
-                i = tag_clone,
-                s = peer_addr.to_string(),
-                d = field::Empty,
-                r = field::Empty,
-                o = field::Empty
-            );
 
             let router = get_router();
             let users = self.users.clone();
             let idle_timeout = self.idle_timeout;
 
-            tokio::spawn(
-                async move {
-                    let result = time::timeout(
-                        Duration::from_secs(10),
-                        handle_client(socket, peer_addr, local_addr, users),
-                    )
-                    .await
-                    .map_err(|_| new_io_timeout_error("Handshake timeout"))
-                    .and_then(|res| res);
-                    match result {
-                        Ok(Some(Socks5Handler::Stream(stream, target))) => {
-                            info!(
-                                "Parsed dst: {} cost {}",
-                                target,
-                                format_duration(start_time.elapsed())
-                            );
-                            if let Err(e) = router
-                                .dispatch_stream(Box::new(stream), &target, &tag_clone)
-                                .await
-                            {
-                                error!("Routing stream error: {:?}", e);
-                            }
-                        }
-                        Ok(Some(Socks5Handler::Packet(udp_socket, client_addr, tcp_socket))) => {
-                            info!(
-                                "SOCKS5 UDP ASSOCIATE from {}. Routing packets...",
-                                peer_addr
-                            );
-
-                            let _ = start_udp_worker(
-                                router.clone(),
-                                udp_socket,
-                                client_addr,
-                                tcp_socket,
-                                idle_timeout,
-                                tag_clone,
-                            )
-                            .await;
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            error!("Inbound error: {}", e);
+            tokio::spawn(async move {
+                let result = time::timeout(
+                    Duration::from_secs(10),
+                    handle_client(socket, peer_addr, local_addr, users),
+                )
+                .await
+                .map_err(|_| new_io_timeout_error("Handshake timeout"))
+                .and_then(|res| res);
+                match result {
+                    Ok(Some(Socks5Handler::Stream(stream, target))) => {
+                        let span = info_span!(
+                            "tcp",
+                            i = tag_clone,
+                            s = peer_addr.to_string(),
+                            d = field::Empty,
+                            r = field::Empty,
+                            o = field::Empty
+                        );
+                        info!(
+                            "Parsed dst: {} cost {}",
+                            target,
+                            format_duration(start_time.elapsed())
+                        );
+                        if let Err(e) = router
+                            .dispatch_stream(Box::new(stream), &target, &tag_clone)
+                            .instrument(span)
+                            .await
+                        {
+                            error!("Routing stream error: {:?}", e);
                         }
                     }
+                    Ok(Some(Socks5Handler::Packet(udp_socket, client_addr, tcp_socket))) => {
+                        let span = info_span!(
+                            "udp",
+                            i = tag_clone,
+                            s = peer_addr.to_string(),
+                            d = field::Empty,
+                            r = field::Empty,
+                            o = field::Empty
+                        );
+                        info!(
+                            "SOCKS5 UDP ASSOCIATE from {}. Routing packets...",
+                            peer_addr
+                        );
+
+                        start_udp_worker(
+                            router.clone(),
+                            udp_socket,
+                            client_addr,
+                            tcp_socket,
+                            idle_timeout,
+                            tag_clone,
+                        )
+                        .instrument(span)
+                        .await;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        error!("Inbound error: {}", e);
+                    }
                 }
-                .instrument(span),
-            );
+            });
             info!("Accepted connection from {}", peer_addr);
         }
     }
@@ -191,9 +198,7 @@ impl AnyPacket for Socks5InboundPacket {
         let client_addr = match *guard {
             Some(addr) => addr,
             None => {
-                return Err(anyhow::anyhow!(
-                    "No client UDP address known yet",
-                ));
+                return Err(anyhow::anyhow!("No client UDP address known yet",));
             }
         };
         drop(guard);
@@ -204,7 +209,10 @@ impl AnyPacket for Socks5InboundPacket {
         let mut data = Vec::with_capacity(header.len() + buf.len());
         data.extend_from_slice(&header);
         data.extend_from_slice(&buf);
-        self.socket.send_to(&data, client_addr).await.map_err(Into::into)
+        self.socket
+            .send_to(&data, client_addr)
+            .await
+            .map_err(Into::into)
     }
 
     async fn recv_from(&self) -> anyhow::Result<(TargetAddr, TargetAddr, Bytes)> {

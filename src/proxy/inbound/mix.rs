@@ -1,10 +1,10 @@
 use crate::config::InboundConfig;
-use anyhow::Context;
-use crate::proxy::inbound::{AnyInbound};
+use crate::proxy::inbound::AnyInbound;
 use crate::proxy::inbound::http::{self, StreamHandler};
 use crate::proxy::inbound::socks5::{self, Socks5Handler};
 use crate::proxy::router::get_router;
 use crate::utils::{format_duration, now};
+use anyhow::{Context, bail};
 use async_trait::async_trait;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -40,12 +40,11 @@ impl MixInbound {
         .parse()
         .context("failed to parse SocketAddr")?;
 
-
         Ok(Self {
             tag,
-            idle_timeout:Duration::from_secs(cfg.idle_timeout.unwrap_or(30)),
+            idle_timeout: Duration::from_secs(cfg.idle_timeout.unwrap_or(30)),
             addr,
-            set_system_proxy:cfg.set_system_proxy,
+            set_system_proxy: cfg.set_system_proxy,
             users,
         })
     }
@@ -61,13 +60,15 @@ impl AnyInbound for MixInbound {
         self.idle_timeout
     }
 
-    async fn listen(
-        &self,
-    ) -> anyhow::Result<()> {
+    async fn listen(&self) -> anyhow::Result<()> {
         let listener = create_tcp_listener(self.addr).await?;
         info!("Mix Inbound listening on {}", self.addr);
 
-        let _proxy_guard = setup_system_proxy(self.set_system_proxy, &self.addr.ip().to_string(), self.addr.port())?;
+        let _proxy_guard = setup_system_proxy(
+            self.set_system_proxy,
+            &self.addr.ip().to_string(),
+            self.addr.port(),
+        )?;
 
         let http_users = self.users.as_ref().map(|users| {
             Arc::new(
@@ -86,14 +87,6 @@ impl AnyInbound for MixInbound {
             let (socket, peer_addr) = listener.accept().await?;
             let local_addr = socket.local_addr().ok();
             let tag_clone = tag.clone();
-            let span = info_span!(
-                "mixed",
-                i = tag_clone,
-                s = peer_addr.to_string(),
-                d = field::Empty,
-                r = field::Empty,
-                o = field::Empty
-            );
             let start_time = now();
             let router = get_router();
             let socks5_users = self.users.clone();
@@ -102,105 +95,104 @@ impl AnyInbound for MixInbound {
 
             let timeout_duration = self.idle_timeout();
             tokio::spawn(async move {
-                // Peek first byte to determine protocol with timeout
-                let mut buf = [0u8; 1];
-                
-                let read_result = time::timeout(timeout_duration, socket.peek(&mut buf)).await;
-                
-                match read_result {
-                    Ok(Ok(_)) => {
-                        // Check for SOCKS5 (0x05)
-                        if buf[0] == 0x05 {
-                            let handle_result = time::timeout(
-                                timeout_duration,
-                                socks5::handle_client(socket, peer_addr, local_addr, socks5_users)
-                            ).await;
+                let result: anyhow::Result<()> = async {
+                    let mut buf = [0u8; 1];
 
-                            match handle_result {
-                                Ok(Ok(Some(Socks5Handler::Stream(stream, target)))) => {
-                                    info!(
-                                        "Mix (SOCKS5) parsed dst: {} cost {}",
-                                        target,
-                                        format_duration(start_time.elapsed())
-                                    );
+                    match time::timeout(timeout_duration, socket.peek(&mut buf)).await {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => return Err(e.into()),
+                        Err(_) => bail!("Mix peek timeout after {:?}", timeout_duration),
+                    }
 
-                                    if let Err(e) = router
-                                        .dispatch_stream(
-                                            Box::new(stream),
-                                            &target,
-                                            &tag_clone,
-                                        )
-                                        .await
-                                    {
-                                        error!("Routing stream error: {:?}", e);
-                                    }
-                                }
-                                Ok(Ok(Some(Socks5Handler::Packet(
+                    if buf[0] == 0x05 {
+                        let result = time::timeout(
+                            timeout_duration,
+                            socks5::handle_client(socket, peer_addr, local_addr, socks5_users),
+                        )
+                        .await
+                        .context("Mix (SOCKS5) handshake timeout")?
+                        .context("Mix (SOCKS5) error")?;
+
+                        match result {
+                            Some(Socks5Handler::Stream(stream, target)) => {
+                                let span = info_span!(
+                                    "tcp",
+                                    i = tag_clone,
+                                    s = peer_addr.to_string(),
+                                    d = field::Empty,
+                                    r = field::Empty,
+                                    o = field::Empty
+                                );
+                                info!(
+                                    "Mix (SOCKS5) parsed dst: {} cost {}",
+                                    target,
+                                    format_duration(start_time.elapsed())
+                                );
+
+                                router
+                                    .dispatch_stream(Box::new(stream), &target, &tag_clone)
+                                    .instrument(span)
+                                    .await
+                                    .context("Routing stream error")?;
+                            }
+                            Some(Socks5Handler::Packet(udp_socket, client_addr, tcp_socket)) => {
+                                let span = info_span!(
+                                    "udp",
+                                    i = tag_clone,
+                                    s = peer_addr.to_string(),
+                                    d = field::Empty,
+                                    r = field::Empty,
+                                    o = field::Empty
+                                );
+                                info!(
+                                    "Mix (SOCKS5) UDP ASSOCIATE from {}. Routing packets...",
+                                    peer_addr
+                                );
+
+                                socks5::start_udp_worker(
+                                    router.clone(),
                                     udp_socket,
                                     client_addr,
                                     tcp_socket,
-                                )))) => {
-                                    info!(
-                                        "Mix (SOCKS5) UDP ASSOCIATE from {}. Routing packets...",
-                                        peer_addr
-                                    );
-
-                                    let _ = socks5::start_udp_worker(
-                                        router.clone(),
-                                        udp_socket,
-                                        client_addr,
-                                        tcp_socket,
-                                        timeout_duration,
-                                        tag_clone.clone(),
-                                    );
-                                }
-                                Ok(Ok(None)) => {}
-                                Ok(Err(e)) => error!("Mix (SOCKS5) error: {}", e),
-                                Err(_) => error!("Mix (SOCKS5) handshake timeout after {:?}", timeout_duration),
+                                    timeout_duration,
+                                    tag_clone.clone(),
+                                )
+                                .instrument(span)
+                                .await;
                             }
-                        } else {
-                            let handle_result = time::timeout(
-                                timeout_duration,
-                                http::handle_client(socket, http_users)
-                            ).await;
+                            None => {}
+                        }
+                    } else {
+                        let result = time::timeout(
+                            timeout_duration,
+                            http::handle_client(socket, http_users),
+                        )
+                        .await
+                        .context("Mix (HTTP) handshake timeout")?
+                        .context("Mix (HTTP) error")?;
 
-                            match handle_result {
-                                Ok(Ok(Some(StreamHandler { stream, target }))) => {
-                                    info!(
-                                        "Mix (HTTP) parsed dst: {} cost: {}",
-                                        target,
-                                        format_duration(start_time.elapsed())
-                                    );
+                        if let Some(StreamHandler { stream, target }) = result {
+                            info!(
+                                "Mix (HTTP) parsed dst: {} cost: {}",
+                                target,
+                                format_duration(start_time.elapsed())
+                            );
 
-                                    if let Err(e) = router
-                                        .dispatch_stream(
-                                            Box::new(stream),
-                                            &target,
-                                            &tag_clone,
-                                        )
-                                        .await
-                                    {
-                                        error!("Routing error: {:?}", e);
-                                    }
-                                }
-                                Ok(Ok(None)) => {}
-                                Ok(Err(e)) => error!("Mix (HTTP) error: {}", e),
-                                Err(_) => error!("Mix (HTTP) handshake timeout after {:?}", timeout_duration),
-                            }
+                            router
+                                .dispatch_stream(Box::new(stream), &target, &tag_clone)
+                                .await
+                                .context("Routing error")?;
                         }
                     }
-                    Ok(Err(e)) => {
-                        // EOF or error from read_exact
-                        if e.kind() != std::io::ErrorKind::UnexpectedEof {
-                            error!("Mix peek error: {}", e);
-                        }
-                    }
-                    Err(_) => {
-                        // Timeout when reading first byte
-                        error!("Mix client read first byte timeout after {:?}", timeout_duration);
-                    }
+
+                    Ok(())
                 }
-            }.instrument(span));
+                .await;
+
+                if let Err(e) = result {
+                    error!("Mix handler error: {:?}", e);
+                }
+            });
         }
     }
 }

@@ -16,7 +16,6 @@ use tokio::time::timeout;
 use tracing::Instrument;
 use tracing::debug;
 use tracing::error;
-use tracing::trace;
 use tracing::warn;
 
 use crate::proxy::outbound::AnyPacket;
@@ -231,29 +230,23 @@ async fn get_receiver(
     context_id: u16,
     notify: Arc<Notify>,
 ) -> anyhow::Result<Arc<ShadowUdpReceiver>> {
-    // 先立即检查一次，如果已经存在则直接返回
-    if let Some(entry) = udp_recv_map.get(&context_id) {
-        return Ok(entry.value().clone());
-    }
+    timeout(Duration::from_secs(10), async {
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        // 先注册当前 waiter，再检查 map，避免 insert+notify 发生在检查与 await 之间时漏通知。
+        notified.as_mut().enable();
 
-    let udp_recv_map_clone = udp_recv_map.clone();
-    let notify_clone = notify.clone();
-
-    tokio::select! {
-        _ = tokio::time::sleep(Duration::from_secs(10)) => {
-            anyhow::bail!("timeout waiting for receiver");
-        }
-        result = async {
-            loop {
-                notify_clone.notified().await;
-                if let Some(entry) = udp_recv_map_clone.get(&context_id) {
-                    return Ok(entry.value().clone());
-                }
+        loop {
+            if let Some(entry) = udp_recv_map.get(&context_id) {
+                notified.set(notify.notified());
+                return entry.value().clone();
             }
-        } => {
-            result
+
+            notified.as_mut().await;
         }
-    }
+    })
+    .await
+    .context("timeout waiting for receiver")
 }
 
 pub fn start_unistream_listener(

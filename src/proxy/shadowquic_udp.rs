@@ -20,6 +20,7 @@ use tracing::warn;
 
 use crate::proxy::outbound::AnyPacket;
 use crate::proxy::{SessionCloser, TargetAddr};
+use crate::utils::format_duration;
 use crate::utils::new_io_other_error;
 use crate::utils::now;
 use crate::utils::quic_wrap::quinn_wrap::QuinnBistream;
@@ -230,6 +231,7 @@ async fn get_receiver(
     context_id: u16,
     notify: Arc<Notify>,
 ) -> anyhow::Result<Arc<ShadowUdpReceiver>> {
+    let start_time = now();
     timeout(Duration::from_secs(20), async {
         let notified = notify.notified();
         tokio::pin!(notified);
@@ -238,6 +240,10 @@ async fn get_receiver(
             notified.as_mut().enable();
 
             if let Some(entry) = udp_recv_map.get(&context_id) {
+                debug!(
+                    "get_receiver cost: {}",
+                    format_duration(start_time.elapsed())
+                );
                 return entry.value().clone();
             }
 
@@ -373,15 +379,32 @@ async fn handle_datagram(
             .map_err(|_| anyhow::anyhow!("Invalid datagram length for context_id"))?,
     );
 
-    let item = get_receiver(
-        udp_recv_map.clone(),
-        recv_context_id,
-        udp_recv_map_notify.clone(),
-    )
-    .await?;
-
     let payload = datagram.slice(2..);
-    item.feed_datagram(payload, remote_src).await;
+
+    if let Some(entry) = udp_recv_map.get(&recv_context_id) {
+        entry.feed_datagram(payload, remote_src).await;
+        return Ok(());
+    }
+
+    tokio::spawn(async move {
+        let result: anyhow::Result<()> = async {
+            let item = get_receiver(
+                udp_recv_map.clone(),
+                recv_context_id,
+                udp_recv_map_notify.clone(),
+            )
+            .await?;
+
+            item.feed_datagram(payload, remote_src).await;
+            Ok(())
+        }
+        .await;
+
+        // 处理错误
+        if let Err(e) = result {
+            eprintln!("Task failed: {}", e);
+        }
+    });
 
     Ok(())
 }

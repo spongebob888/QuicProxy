@@ -277,6 +277,8 @@ pub struct InboundConfig {
 
     #[serde(default = "default_false")]
     pub gso: bool,
+    #[serde(default = "default_true")]
+    pub mtu_discoveriy: bool,
     pub mtu: Option<u16>,
     pub auto_route: Option<bool>,
     pub tun_name: Option<String>,
@@ -320,6 +322,8 @@ pub struct OutboundConfig {
     pub pool_size: Option<u16>,
     #[serde(default = "default_false")]
     pub gso: bool,
+    #[serde(default = "default_true")]
+    pub mtu_discoveriy: bool,
     pub outbounds: Option<Vec<String>>,
     pub default_outbound: Option<String>,
     pub url: Option<String>,

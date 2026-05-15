@@ -11,7 +11,9 @@ use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::timeout;
 use tracing::Instrument;
 use tracing::debug;
@@ -36,13 +38,13 @@ pub struct PerConnectionState {
     pub udp_recv_map: UdpRecvMap,
     pub udp_recv_map_notify: Arc<KeyedNotify>,
     pub waiting_datagram_buffer: WaitingDatagramBuffer,
-    pub datagram_sender_tx: tokio::sync::mpsc::Sender<Bytes>,
+    pub datagram_sender_tx: UnboundedSender<Bytes>,
 }
 
 impl PerConnectionState {
-    pub fn new(capacity: usize) -> (Self, tokio::sync::mpsc::Receiver<Bytes>) {
+    pub fn new() -> (Self, UnboundedReceiver<Bytes>) {
         let udp_recv_map: UdpRecvMap = Arc::new(DashMap::new());
-        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        let (tx, rx) = unbounded_channel();
         (
             Self {
                 next_context_id: AtomicU16::new(1),
@@ -57,13 +59,13 @@ impl PerConnectionState {
 }
 
 pub struct ShadowUdpDatagramBuffer {
-    recveiver_sender: Sender<Bytes>,
-    recveiver: Mutex<Receiver<Bytes>>,
+    recveiver_sender: UnboundedSender<Bytes>,
+    recveiver: Mutex<UnboundedReceiver<Bytes>>,
 }
 
 impl ShadowUdpDatagramBuffer {
     pub fn new() -> Self {
-        let (sender, recver) = mpsc::channel(100);
+        let (sender, recver) = mpsc::unbounded_channel();
 
         Self {
             recveiver_sender: sender,
@@ -73,8 +75,8 @@ impl ShadowUdpDatagramBuffer {
 }
 
 pub struct ShadowUdpReceiver {
-    recveiver_sender: Sender<(SourceAddr, Bytes)>, // feed packet to recver
-    recveiver: Mutex<Receiver<(SourceAddr, Bytes)>>,
+    recveiver_sender: UnboundedSender<(SourceAddr, Bytes)>, // feed packet to recver
+    recveiver: Mutex<UnboundedReceiver<(SourceAddr, Bytes)>>,
 
     udp_recv_map: UdpRecvMap,
     closer: Arc<SessionCloser>,
@@ -85,7 +87,7 @@ pub struct ShadowUdpReceiver {
 
 impl ShadowUdpReceiver {
     pub fn new(udp_recv_map: UdpRecvMap) -> Self {
-        let (sender, recver) = mpsc::channel(10);
+        let (sender, recver) = mpsc::unbounded_channel();
         let closer = Arc::new(SessionCloser::new());
 
         Self {
@@ -131,7 +133,7 @@ impl ShadowUdpReceiver {
                     } => {
                         match res {
                             Ok(data) => {
-                                if let Err(e) = sender_clone.send((remote_src.clone(), data)).await{
+                                if let Err(e) = sender_clone.send((remote_src.clone(), data)) {
                                     closer_clone.close();
                                     error!("unistream failed to send packet to sender: {}, id: {}", e, recv_context_id);
                                     break;
@@ -152,11 +154,7 @@ impl ShadowUdpReceiver {
     }
 
     pub async fn feed_datagram(&self, payload: Bytes, remote_src: TargetAddr) {
-        match self
-            .recveiver_sender
-            .send((remote_src.clone(), payload))
-            .await
-        {
+        match self.recveiver_sender.send((remote_src.clone(), payload)) {
             Ok(_) => {}
             Err(e) => {
                 error!("failed to feed datagram: {}", e);
@@ -363,47 +361,57 @@ pub fn start_datagram_loop(
     udp_recv_map: UdpRecvMap,
     waiting_datagram_buffer: WaitingDatagramBuffer,
     udp_recv_map_notify: Arc<KeyedNotify>,
-    mut datagram_sender_rx: tokio::sync::mpsc::Receiver<Bytes>,
+    mut datagram_sender_rx: UnboundedReceiver<Bytes>,
 ) {
-    tokio::spawn(async move {
-        let remote_src = TargetAddr::Ip(conn.remote_address());
-        loop {
-            tokio::select! {
-                res = conn.read_datagram() => {
-                    match res {
-                        Ok(datagram) => {
-                            if let Err(e) = handle_datagram(
-                                udp_recv_map.clone(),
-                                udp_recv_map_notify.clone(),
-                                waiting_datagram_buffer.clone(),
-                                datagram,
-                                remote_src.clone(),
-                            ).await {
-                                debug!("handle_datagram error: {}", e);
-                            }
-                        }
-                        Err(e) => {
-                            debug!("read_datagram failed, connection closed: {}", e);
-                            break;
+    // recv loop
+    {
+        let conn = conn.clone();
+        let udp_recv_map = udp_recv_map.clone();
+        let waiting_datagram_buffer = waiting_datagram_buffer.clone();
+        let udp_recv_map_notify = udp_recv_map_notify.clone();
+
+        tokio::spawn(async move {
+            let remote_src = TargetAddr::Ip(conn.remote_address());
+
+            loop {
+                match conn.read_datagram().await {
+                    Ok(datagram) => {
+                        if let Err(e) = handle_datagram(
+                            udp_recv_map.clone(),
+                            udp_recv_map_notify.clone(),
+                            waiting_datagram_buffer.clone(),
+                            datagram,
+                            remote_src.clone(),
+                        )
+                        .await
+                        {
+                            debug!("handle_datagram error: {}", e);
                         }
                     }
-                }
-                payload = datagram_sender_rx.recv() => {
-                    match payload {
-                        Some(datagram) => {
-                            if let Err(e) = conn.send_datagram(datagram) {
-                                warn!("send_datagram_wait failed: {}", e);
-                            }
-                        }
-                        None => {
-                            error!("datagram_sender_rx closed");
-                            break;
-                        }
+                    Err(e) => {
+                        debug!("read_datagram failed, connection closed: {}", e);
+                        break;
                     }
                 }
             }
-        }
-    });
+        });
+    }
+
+    // send loop
+    {
+        let conn = conn.clone();
+
+        tokio::spawn(async move {
+            while let Some(datagram) = datagram_sender_rx.recv().await {
+                let len = datagram.len();
+                if let Err(e) = conn.send_datagram(datagram) {
+                    warn!("send_datagram {} failed: {}", len, e);
+                }
+            }
+
+            error!("datagram_sender_rx closed");
+        });
+    }
 }
 
 async fn handle_datagram(
@@ -426,6 +434,11 @@ async fn handle_datagram(
 
     let payload = datagram.slice(2..);
 
+    if let Some(item) = udp_recv_map.get(&recv_context_id) {
+        item.feed_datagram(payload, remote_src).await;
+        return Ok(());
+    }
+
     let mut is_new = false;
 
     let item = waiting_datagram_buffer
@@ -436,7 +449,7 @@ async fn handle_datagram(
         })
         .clone();
 
-    if let Err(e) = item.recveiver_sender.send(Bytes::from(payload)).await {
+    if let Err(e) = item.recveiver_sender.send(Bytes::from(payload)) {
         waiting_datagram_buffer.remove(&recv_context_id);
         bail!("datagram sender {} closed: {}", recv_context_id, e);
     }
@@ -493,7 +506,7 @@ async fn handle_datagram(
 
 pub struct ShadowQuicUdpPacket {
     send_unistream: Option<Arc<Mutex<quinn::SendStream>>>,
-    datagram_sender_tx: Option<tokio::sync::mpsc::Sender<Bytes>>,
+    datagram_sender_tx: Option<tokio::sync::mpsc::UnboundedSender<Bytes>>,
 
     send_context_id: u16,
     target: TargetAddr,
@@ -504,7 +517,7 @@ pub struct ShadowQuicUdpPacket {
 impl ShadowQuicUdpPacket {
     pub fn new(
         send_unistream: Option<Arc<Mutex<quinn::SendStream>>>,
-        datagram_sender_tx: Option<tokio::sync::mpsc::Sender<Bytes>>,
+        datagram_sender_tx: Option<tokio::sync::mpsc::UnboundedSender<Bytes>>,
         send_context_id: u16,
         target: TargetAddr,
 
@@ -546,7 +559,7 @@ impl AnyPacket for ShadowQuicUdpPacket {
             let mut packet = Vec::with_capacity(2 + buf.len());
             packet.extend_from_slice(&self.send_context_id.to_be_bytes());
             packet.extend_from_slice(&buf);
-            if sender.send(Bytes::from(packet)).await.is_err() {
+            if sender.send(Bytes::from(packet)).is_err() {
                 warn!("datagram send queue closed");
             }
         }

@@ -16,7 +16,9 @@
       "type": "shadowquic",
       "address": "0.0.0.0",
       "port": 13431,
-      "idle_timeout": 50,
+      "idle_timeout": 500,
+      "mtu_discoveriy": true,
+      "gso": true,
       "tls": {
         "enable_jls": true,
         "jls_username": "user",

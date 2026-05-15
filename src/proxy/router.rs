@@ -12,7 +12,7 @@ use dashmap::DashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock, mpsc};
 use tokio::time::sleep;
 use tracing::{Instrument, Span, debug, error, field, info, info_span, trace};
@@ -477,26 +477,115 @@ impl Router {
             ._dispatch_packet(target_addr, inbound_tag, payload)
             .await?;
         let out_packet_closer = out_packet.closer();
-        let out_packet_clone = out_packet.clone();
         let in_packet_closer = in_packet.closer();
-        let in_packet = in_packet.clone();
+
+        info!("New UDP session: {} -> {}", source_addr, target_addr);
 
         if let Some(packet) = payload {
             out_packet
-                .send_to(Bytes::copy_from_slice(packet), &target_addr, &source_addr)
+                .send_to(Bytes::copy_from_slice(packet), target_addr, source_addr)
                 .await?;
+            debug!(
+                "send {} from {} to {}",
+                packet.len(),
+                source_addr,
+                target_addr
+            );
         }
 
-        let timer = sleep(timeout_duration);
-        tokio::pin!(timer);
+        // ==========================================
+        // Time Touch 核心：记录最后一次活跃时间
+        // ==========================================
+        // 使用 std::sync::Mutex 即可，因为它只在同步代码块中被极短时间持有，不存在跨 await 阻塞的问题。
+        let last_activity = Arc::new(std::sync::Mutex::new(Instant::now()));
 
-        info!("New UDP session: {} -> {}", source_addr, target_addr);
+        // ==========================================
+        // Spawn: Inbound -> Outbound (发往目标服务器)
+        // ==========================================
+        let t1_in = in_packet.clone();
+        let t1_out = out_packet.clone();
+        let t1_activity = last_activity.clone();
+        let t1_source = source_addr.clone();
+        let t1_target = target_addr.clone();
+
+        let mut t1 = tokio::spawn(
+            async move {
+                loop {
+                    match t1_in.recv_from().await {
+                        Ok((_source, _target, packet)) => {
+                            debug!("send {} from {} to {}", packet.len(), t1_source, t1_target);
+                            if let Err(e) = t1_out.send_to(packet, &t1_target, &t1_source).await {
+                                info!("UDP session quit because [outbound err: {:#}]", e);
+                                break;
+                            }
+                            // Time Touch: 刷新最后活跃时间
+                            *t1_activity.lock().unwrap() = Instant::now();
+                        }
+                        Err(e) => {
+                            info!("UDP session quit because [inbound err: {:#}]", e);
+                            break;
+                        }
+                    }
+                }
+            }
+            .in_current_span(),
+        ); // 注入当前 Span
+
+        // ==========================================
+        // Spawn: Outbound -> Inbound (接收目标服务器返回)
+        // ==========================================
+        let t2_in = in_packet.clone();
+        let t2_out = out_packet.clone();
+        let t2_activity = last_activity.clone();
+        let t2_source = source_addr.clone();
+        let t2_target = target_addr.clone();
+
+        let mut t2 = tokio::spawn(
+            async move {
+                loop {
+                    match t2_out.recv_from().await {
+                        Ok((_source, _target, packet)) => {
+                            debug!("recv {} from {} to {}", packet.len(), t2_target, t2_source);
+                            if let Err(e) = t2_in.send_to(packet, &t2_source, &t2_target).await {
+                                info!("UDP session quit because [inbound err: {:#}]", e);
+                                break;
+                            }
+                            // Time Touch: 刷新最后活跃时间
+                            *t2_activity.lock().unwrap() = Instant::now();
+                        }
+                        Err(e) => {
+                            info!("UDP session quit because [outbound err: {:#}]", e);
+                            break;
+                        }
+                    }
+                }
+            }
+            .in_current_span(),
+        ); // 注入当前 Span
+
+        // 初始化检查定时器
+        let mut check_timer = Box::pin(sleep(timeout_duration));
+
+        // ==========================================
+        // 主监控循环
+        // ==========================================
         loop {
             tokio::select! {
-                _ = &mut timer => {
-                    info!("UDP session quit because [idle timeout]");
-                    break;
+                // 1. 定期/按需检查 Idle Timeout
+                _ = &mut check_timer => {
+                    let last = *last_activity.lock().unwrap();
+                    let elapsed = last.elapsed();
+
+                    if elapsed >= timeout_duration {
+                        // 距离上一次 Time Touch 的时间已经超过超时阈值，真正超时
+                        info!("UDP session quit because [idle timeout]");
+                        break;
+                    } else {
+                        // 期间有流量发生，重新将定时器拨到预期的下一次超时时间点
+                        check_timer.as_mut().reset((last + timeout_duration).into());
+                    }
                 },
+                // 2. 通道关闭通知
                 _ = out_packet_closer.wait() => {
                     info!("UDP session quit because [outbound actively closed]");
                     break;
@@ -505,46 +594,32 @@ impl Router {
                     info!("UDP session quit because [inbound actively closed]");
                     break;
                 },
-                res = out_packet_clone.recv_from() => {
-                    match res {
-                        Ok((_source, _target, packet)) => {
-                            trace!("send {}, from {} to {}", packet.len(), target_addr, source_addr);
-                            if let Err(e) = in_packet.send_to(packet, &source_addr, &target_addr).await {
-                                info!("UDP session quit because [inbound err: {:#}]",e);
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            info!("UDP session quit because [outbound err: {:#}]",e);
-                            break;
-                        },
-                    }
-                },
-                res = in_packet.recv_from() => {
-                    match res {
-                        Ok((_source, _target, packet)) => {
-                            trace!("send {}, from {} to {}", packet.len(), source_addr, target_addr);
-                            if let Err(e) = out_packet.send_to(packet, &target_addr, &source_addr).await {
-                                info!("UDP session quit because [outbound err: {:#}]",e);
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            info!("UDP session quit because [inbound err: {:#}]",e);
-                            break;
-                        },
-                    }
-                },
-                 _ = async {
+                // 3. 重置信号触发
+                _ = async {
                     if let Some(n) = &reset {
                         n.notified().await
+                    } else {
+                        std::future::pending().await // 永远挂起
                     }
-                }, if reset.is_some() => {
+                } => {
                     info!("UDP session quit because [reset notified]");
                     break;
                 },
+                // 4. 子任务退出监控
+                _ = &mut t1 => {
+                    break;
+                },
+                _ = &mut t2 => {
+                    break;
+                }
             }
         }
+
+        // ==========================================
+        // 资源清理
+        // ==========================================
+        t1.abort();
+        t2.abort();
 
         out_packet_closer.close();
         in_packet_closer.close();
@@ -564,7 +639,8 @@ impl Router {
         } else {
             info!("UDP session Closed");
         }
-        return Ok(());
+
+        Ok(())
     }
 
     pub async fn _dispatch_packet(

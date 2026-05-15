@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::InboundConfig;
 use crate::proxy::inbound::AnyInbound;
@@ -36,6 +37,7 @@ pub struct ShadowQuicInbound {
     tls: QuicTlsConfig,
     auth_hash: Option<[u8; 64]>,
     enable_gso: bool,
+    enable_mtudis: bool,
 
     congestion_controller: Option<String>,
     idle_timeout: Duration,
@@ -67,6 +69,7 @@ impl ShadowQuicInbound {
             port: cfg.port.context("require port")?,
             idle_timeout,
             enable_gso: cfg.gso,
+            enable_mtudis: cfg.mtu_discoveriy,
         })
     }
 
@@ -77,7 +80,7 @@ impl ShadowQuicInbound {
         router: Arc<Router>,
         inbound_tag: &str,
         udp_recv_map: UdpRecvMap,
-        datagram_sender_tx: tokio::sync::mpsc::Sender<Bytes>,
+        datagram_sender_tx: UnboundedSender<Bytes>,
         conn: Arc<quinn::Connection>,
         send_context_id: u16,
         idle_timeout: Duration,
@@ -91,12 +94,10 @@ impl ShadowQuicInbound {
             .or_insert_with(|| Arc::new(ShadowUdpReceiver::new(udp_recv_map.clone())))
             .clone();
 
-        {
-            let mut buf = target.to_bytes();
-            buf.extend_from_slice(&send_context_id.to_be_bytes());
-            bistream.write_all(&buf).await?;
-            bistream.flush().await?;
-        }
+        let mut buf = target.to_bytes();
+        buf.extend_from_slice(&send_context_id.to_be_bytes());
+        bistream.write_all(&buf).await?;
+        bistream.flush().await?;
 
         run_bistream_recv_listener(
             bistream,
@@ -180,6 +181,7 @@ impl AnyInbound for ShadowQuicInbound {
             self.tls.jls_password.clone(),
             self.tls.enable_jls,
             self.enable_gso,
+            self.enable_mtudis,
         )
         .await
         .map_err(|e| new_io_other_error(format!("QUIC server error: {}", e)))?;
@@ -197,7 +199,7 @@ impl AnyInbound for ShadowQuicInbound {
                     let router_clone = router.clone();
                     info!("Accepted QUIC connection from {}", conn.remote_address());
 
-                    let (per_conn, datagram_sender_rx) = PerConnectionState::new(1024);
+                    let (per_conn, datagram_sender_rx) = PerConnectionState::new();
                     let per_conn = Arc::new(per_conn);
                     let mut datagram_sender_rx = Some(datagram_sender_rx);
                     start_udp_session_cleaner(
@@ -296,8 +298,9 @@ impl AnyInbound for ShadowQuicInbound {
                                                     r = field::Empty,
                                                     o = field::Empty
                                                 );
-                                                let context_id =
-                                                    per_conn.next_context_id.fetch_add(1, Ordering::SeqCst);
+                                                let context_id = per_conn
+                                                    .next_context_id
+                                                    .fetch_add(1, Ordering::SeqCst);
                                                 Self::handle_udp(
                                                     if cmd == 0x03 {
                                                         UdpMode::OverDatagram

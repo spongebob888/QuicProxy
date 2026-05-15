@@ -32,6 +32,8 @@
         "port": 2344,
         "idle_timeout": 50,
         "udp_mod": "datagram",
+        "mtu_discoveriy": true,
+        "gso": true,
         "tls": {
           "enable_jls": true,
           "jls_username": "user",

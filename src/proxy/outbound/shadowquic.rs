@@ -40,10 +40,17 @@ pub struct ShadowQuicOutbound {
     connect_timeout: Duration,
     idle_timeout: Duration,
     enable_gso: bool,
+    enable_mtudis: bool,
 
     udp_mod: UdpMode,
 
-    cached: Mutex<Option<(Arc<quinn::Connection>, Arc<QuinnClient>, Arc<PerConnectionState>)>>,
+    cached: Mutex<
+        Option<(
+            Arc<quinn::Connection>,
+            Arc<QuinnClient>,
+            Arc<PerConnectionState>,
+        )>,
+    >,
 }
 
 impl ShadowQuicOutbound {
@@ -94,6 +101,7 @@ impl ShadowQuicOutbound {
             bind_interface: cfg.bind_interface.clone(),
             congestion_controller: cfg.congestion_controller.clone(),
             enable_gso: cfg.gso,
+            enable_mtudis: cfg.mtu_discoveriy,
         }))
     }
 
@@ -138,6 +146,7 @@ impl ShadowQuicOutbound {
                 self.tls.jls_password.clone(),
                 self.tls.enable_jls,
                 self.enable_gso,
+                self.enable_mtudis,
             )
             .with_context(|| {
                 format!(
@@ -164,9 +173,13 @@ impl ShadowQuicOutbound {
 
         info!("new quic connection");
 
-        let (state, datagram_sender_rx) = PerConnectionState::new(100);
+        let (state, datagram_sender_rx) = PerConnectionState::new();
         let state = Arc::new(state);
-        start_udp_session_cleaner(state.udp_recv_map.clone(), self.idle_timeout, self.idle_timeout);
+        start_udp_session_cleaner(
+            state.udp_recv_map.clone(),
+            self.idle_timeout,
+            self.idle_timeout,
+        );
 
         if let Some(auth_hash) = self.auth_hash {
             match conn.open_bi().await {
@@ -246,7 +259,11 @@ impl ShadowQuicOutbound {
 
     async fn open_unistream_with_retry(
         &self,
-    ) -> anyhow::Result<(Arc<quinn::Connection>, quinn::SendStream, Arc<PerConnectionState>)> {
+    ) -> anyhow::Result<(
+        Arc<quinn::Connection>,
+        quinn::SendStream,
+        Arc<PerConnectionState>,
+    )> {
         let (conn, state) = self.ensure_connection().await?;
 
         match conn.open_uni().await {

@@ -66,6 +66,7 @@ axum = "0.8.8"
 uuid = { version = "1.21.0", features = ["v4", "fast-rng", "macro-diagnostics"] }
 rcgen = "0.14.7"
 flume = "0.12.0"
+tokio-util = "0.7.18"
 [target.'cfg(target_os = "android")'.dependencies]
 tracing-android = "0.2.0"
 

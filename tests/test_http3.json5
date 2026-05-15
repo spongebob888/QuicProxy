@@ -14,7 +14,7 @@
         // "fdfe:dcba:9876::1/126",
       ],
       "idle_timeout": 100,
-      "mtu": 1428,
+      "mtu": 1424,
       "auto_route": true
     },
     "sq_inbound": {

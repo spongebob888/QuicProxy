@@ -38,6 +38,8 @@ pub struct ShadowQuicInbound {
     auth_hash: Option<[u8; 64]>,
     enable_gso: bool,
     enable_mtudis: bool,
+    min_mtu: u16,
+    initial_mtu: u16,
 
     congestion_controller: Option<String>,
     idle_timeout: Duration,
@@ -70,6 +72,8 @@ impl ShadowQuicInbound {
             idle_timeout,
             enable_gso: cfg.gso,
             enable_mtudis: cfg.mtu_discoveriy,
+            min_mtu: cfg.min_mtu,
+            initial_mtu: cfg.initial_mtu,
         })
     }
 
@@ -182,6 +186,8 @@ impl AnyInbound for ShadowQuicInbound {
             self.tls.enable_jls,
             self.enable_gso,
             self.enable_mtudis,
+            self.initial_mtu,
+            self.min_mtu,
         )
         .await
         .map_err(|e| new_io_other_error(format!("QUIC server error: {}", e)))?;

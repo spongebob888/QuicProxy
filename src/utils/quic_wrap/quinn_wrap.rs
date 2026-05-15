@@ -212,6 +212,8 @@ impl QuinnServer {
         is_jls: bool,
         enable_gso: bool,
         enable_mtudis: bool,
+        initial_mtu: u16,
+        min_mtu: u16,
     ) -> anyhow::Result<Self> {
         let server_name = sni.as_deref().unwrap_or("apple.com");
         let mut server_config = if is_jls {
@@ -277,6 +279,9 @@ impl QuinnServer {
         transport_config.max_concurrent_bidi_streams(500u32.into());
         transport_config.max_concurrent_uni_streams(500u32.into());
         transport_config.enable_segmentation_offload(enable_gso);
+        transport_config.initial_mtu(initial_mtu);
+        transport_config.min_mtu(min_mtu);
+
         let mtudis = if enable_mtudis {
             let mut mtudis = MtuDiscoveryConfig::default();
             mtudis.black_hole_cooldown(Duration::from_secs(120));
@@ -392,6 +397,8 @@ impl QuinnClient {
         is_jls: bool,
         enable_gso: bool,
         enable_mtudis: bool,
+        initial_mtu: u16,
+        min_mtu: u16,
     ) -> anyhow::Result<Self> {
         let server_name = sni.as_deref().unwrap_or("apple.com");
         let mut client_crypto = if is_jls {
@@ -451,6 +458,8 @@ impl QuinnClient {
         transport_config.datagram_receive_buffer_size(Some(QUIC_DATAGRAM_BUFFER_SIZE));
         transport_config.datagram_send_buffer_size(QUIC_DATAGRAM_BUFFER_SIZE);
         transport_config.enable_segmentation_offload(enable_gso);
+        transport_config.initial_mtu(1400);
+        transport_config.min_mtu(1400);
 
         let mtudis = if enable_mtudis {
             let mut mtudis = MtuDiscoveryConfig::default();

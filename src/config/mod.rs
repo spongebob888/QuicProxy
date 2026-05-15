@@ -96,6 +96,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_mtu() -> u16 {
+    1400
+}
+
 fn default_false() -> bool {
     false
 }
@@ -280,6 +284,10 @@ pub struct InboundConfig {
     #[serde(default = "default_true")]
     pub mtu_discoveriy: bool,
     pub mtu: Option<u16>,
+    #[serde(default = "default_mtu")]
+    pub min_mtu: u16,
+    #[serde(default = "default_mtu")]
+    pub initial_mtu: u16,
     pub auto_route: Option<bool>,
     pub tun_name: Option<String>,
     pub tun_address: Option<Vec<String>>,
@@ -324,6 +332,10 @@ pub struct OutboundConfig {
     pub gso: bool,
     #[serde(default = "default_true")]
     pub mtu_discoveriy: bool,
+    #[serde(default = "default_mtu")]
+    pub min_mtu: u16,
+    #[serde(default = "default_mtu")]
+    pub initial_mtu: u16,
     pub outbounds: Option<Vec<String>>,
     pub default_outbound: Option<String>,
     pub url: Option<String>,

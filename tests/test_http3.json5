@@ -23,6 +23,7 @@
       "set_system_proxy": false,
       "idle_timeout": 500,
       "port": 2344,
+      "gso": true,
       "tls": {
         "enable_jls": true,
         "jls_username": "user",

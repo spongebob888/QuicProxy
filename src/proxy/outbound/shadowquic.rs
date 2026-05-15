@@ -41,6 +41,8 @@ pub struct ShadowQuicOutbound {
     idle_timeout: Duration,
     enable_gso: bool,
     enable_mtudis: bool,
+    min_mtu: u16,
+    initial_mtu: u16,
 
     udp_mod: UdpMode,
 
@@ -102,6 +104,8 @@ impl ShadowQuicOutbound {
             congestion_controller: cfg.congestion_controller.clone(),
             enable_gso: cfg.gso,
             enable_mtudis: cfg.mtu_discoveriy,
+            min_mtu: cfg.min_mtu,
+            initial_mtu: cfg.initial_mtu,
         }))
     }
 
@@ -147,6 +151,8 @@ impl ShadowQuicOutbound {
                 self.tls.enable_jls,
                 self.enable_gso,
                 self.enable_mtudis,
+                self.initial_mtu,
+                self.min_mtu,
             )
             .with_context(|| {
                 format!(

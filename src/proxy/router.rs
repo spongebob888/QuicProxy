@@ -474,12 +474,10 @@ impl Router {
         reset: Option<Arc<Notify>>,
     ) -> anyhow::Result<()> {
         let out_packet = self
-            ._dispatch_packet(target_addr, inbound_tag, payload)
+            ._dispatch_packet(source_addr, target_addr, inbound_tag, payload)
             .await?;
         let out_packet_closer = out_packet.closer();
         let in_packet_closer = in_packet.closer();
-
-        info!("New UDP session: {} -> {}", source_addr, target_addr);
 
         if let Some(packet) = payload {
             out_packet
@@ -513,7 +511,7 @@ impl Router {
                 loop {
                     match t1_in.recv_from().await {
                         Ok((_source, _target, packet)) => {
-                            debug!("send {} from {} to {}", packet.len(), t1_source, t1_target);
+                            trace!("send {} from {} to {}", packet.len(), t1_source, t1_target);
                             if let Err(e) = t1_out.send_to(packet, &t1_target, &t1_source).await {
                                 info!("UDP session quit because [outbound err: {:#}]", e);
                                 break;
@@ -545,7 +543,7 @@ impl Router {
                 loop {
                     match t2_out.recv_from().await {
                         Ok((_source, _target, packet)) => {
-                            debug!("recv {} from {} to {}", packet.len(), t2_target, t2_source);
+                            trace!("recv {} from {} to {}", packet.len(), t2_target, t2_source);
                             if let Err(e) = t2_in.send_to(packet, &t2_source, &t2_target).await {
                                 info!("UDP session quit because [inbound err: {:#}]", e);
                                 break;
@@ -645,6 +643,7 @@ impl Router {
 
     pub async fn _dispatch_packet(
         &self,
+        source_addr: &SourceAddr,
         target_addr: &TargetAddr,
         inbound_tag: &str,
         payload: Option<&[u8]>,
@@ -654,6 +653,8 @@ impl Router {
             .select_out(target_addr, inbound_tag, Some(NetworkType::Udp), payload)
             .await;
         let tag = outbound.tag().to_string();
+
+        info!("New UDP session: {} -> {}", source_addr, final_target);
 
         // Connect
         match outbound.connect_packet(&final_target).await {

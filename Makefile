@@ -1,14 +1,4 @@
 test_http3:
-	IP=$$(dig +short quic.nginx.org | head -1); \
-	/opt/homebrew/opt/curl/bin/curl \
-		--http3-only \
-		--connect-timeout 5 \
-		--resolve quic.nginx.org:443:$$IP \
-		-o /dev/null \
-		-s \
-		-w 'nginx: tls=%{time_appconnect}s total=%{time_total}s\n' \
-		https://quic.nginx.org
-
 	IP=$$(dig +short cloudflare.com | head -1); \
 	/opt/homebrew/opt/curl/bin/curl \
 		--http3-only \
@@ -19,6 +9,15 @@ test_http3:
 		-w 'cloudflare: tls=%{time_appconnect}s total=%{time_total}s\n' \
 		https://cloudflare.com
 
+	IP=$$(dig +short quic.nginx.org | head -1); \
+	/opt/homebrew/opt/curl/bin/curl \
+		--http3-only \
+		--connect-timeout 5 \
+		--resolve quic.nginx.org:443:$$IP \
+		-o /dev/null \
+		-s \
+		-w 'nginx: tls=%{time_appconnect}s total=%{time_total}s\n' \
+		https://quic.nginx.org
 
 run_test_config: build
 	./target/release/quicproxy --elevate -c ./tests/test_http3.json5

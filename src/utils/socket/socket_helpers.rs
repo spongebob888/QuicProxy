@@ -64,13 +64,24 @@ pub async fn new_tcp_stream(
 
     if let Some(ref iface) = iface {
         bind_to_interface(&socket, iface, domain)?;
+
+        #[cfg(target_os = "linux")]
+        {
+            let bind_addr = match domain {
+                socket2::Domain::IPV4 => {
+                    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0)
+                }
+                _ => SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0),
+            };
+            socket.bind(&bind_addr.into())?;
+        }
     } else {
         debug!("tcp socket not bound to any interface");
     }
 
     set_so_mark(&socket, so_mark)?;
     socket.set_keepalive(true)?;
-    socket.set_tcp_nodelay(true)?; // TCP only
+    socket.set_tcp_nodelay(true)?;
     socket.set_nonblocking(true)?;
 
     TcpSocket::from_std_stream(socket.into())
@@ -105,8 +116,7 @@ fn bind_udp_socket(
     if let Some(iface) = iface {
         bind_to_interface(socket, iface, domain)?;
 
-        // Windows 必须显式 bind 才能获取 local_addr（quinn 依赖）
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
             let addr = src
                 .map(socket2::SockAddr::from)
@@ -117,17 +127,14 @@ fn bind_udp_socket(
         return Ok(());
     }
 
-    // 情况2: 指定了源地址
     if let Some(src) = src {
         socket.bind(&src.into())?;
         trace!("udp socket bound: {socket:?} src={:?}", src);
         return Ok(());
     }
 
-    // 情况3: 完全未指定
     trace!("udp socket not bound to any specific address: {socket:?}");
 
-    // Windows: 未绑定的 UDP socket 会导致 quinn 报错 10022
     #[cfg(target_os = "windows")]
     {
         socket.bind(&_unspecified_addr(domain))?;

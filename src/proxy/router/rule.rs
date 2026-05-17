@@ -1,7 +1,7 @@
 use ipnet::IpNet;
 use simple_dns::QTYPE;
 use std::sync::Arc;
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::config::{NetworkType, RouterMode, RuleConfig};
 use crate::dns::{AnyDNS, get_dns_by_tag, resolve_target_base2};
@@ -293,19 +293,29 @@ impl Rule {
 
         if let Some(ip_cidrs) = &self.ip_cidr {
             if !ip_cidrs.is_empty() {
-                if let Some(dns) = self.dns.clone() {
-                    match resolve_target_base2(target, dns).await {
-                        Ok(ip) => {
-                            if !ip_cidrs.iter().any(|cidr| cidr.contains(&ip)) {
+                let ip = match target {
+                    TargetAddr::Ip(socket_addr) => socket_addr.ip(),
+                    TargetAddr::Domain(_, _) => {
+                        let dns = match &self.dns {
+                            Some(dns) => dns,
+                            None => {
+                                warn!(
+                                    "IP CIDR validation requires DNS resolution for domain targets."
+                                );
+                                return (false, None);
+                            }
+                        };
+                        match resolve_target_base2(target, dns.clone()).await {
+                            Ok(ip) => ip,
+                            Err(e) => {
+                                error!("failed to resolve ip: {}", e);
                                 return (false, None);
                             }
                         }
-                        Err(e) => {
-                            error!("failed to resolve ip: {}", e);
-                            return (false, None);
-                        }
                     }
-                } else {
+                };
+
+                if !ip_cidrs.iter().any(|cidr| cidr.contains(&ip)) {
                     return (false, None);
                 }
             }

@@ -172,6 +172,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + ?Sized> ReadWrite for T {}
 
 /// A boxed trait object for any stream that implements ReadWrite.
 pub type AnyStream = Box<dyn ReadWrite>;
+pub type PacketInfo = (SourceAddr, TargetAddr, Bytes);
 
 pub struct LazyHandshakeStream {
     stream: AnyStream,
@@ -260,19 +261,19 @@ pub trait AnyPacket: Send + Sync {
         bail!("Not supported")
     }
 
-    async fn recv_from(&self) -> anyhow::Result<(SourceAddr, TargetAddr, Bytes)> {
+    async fn recv_from(&self) -> anyhow::Result<PacketInfo> {
         bail!("Not supported")
     }
 
-    async fn send_many(&self, items: &[(Bytes, TargetAddr, SourceAddr)]) -> anyhow::Result<usize> {
+    async fn send_many(&self, items: &[PacketInfo]) -> anyhow::Result<usize> {
         let mut r = 0;
-        for (buf, target, from) in items {
+        for (from, target, buf) in items {
             r += self.send_to(buf.clone(), target, from).await?;
         }
         Ok(r)
     }
 
-    async fn recv_many(&self) -> anyhow::Result<Vec<(TargetAddr, TargetAddr, Bytes)>> {
+    async fn recv_many(&self) -> anyhow::Result<Vec<PacketInfo>> {
         Ok(vec![self.recv_from().await?])
     }
 
@@ -299,7 +300,7 @@ impl AnyPacket for tokio::net::UdpSocket {
         }
     }
 
-    async fn recv_from(&self) -> anyhow::Result<(TargetAddr, TargetAddr, Bytes)> {
+    async fn recv_from(&self) -> anyhow::Result<PacketInfo> {
         let mut buf = BytesMut::with_capacity(1024 * 2);
         let (n, addr) = self.recv_buf_from(&mut buf).await?;
         buf.truncate(n);
@@ -420,7 +421,7 @@ impl AnyPacket for UdpHandler {
         self.udp_tx.send_to(buf, target, from).await
     }
 
-    async fn recv_from(&self) -> anyhow::Result<(TargetAddr, TargetAddr, Bytes)> {
+    async fn recv_from(&self) -> anyhow::Result<PacketInfo> {
         let mut rx = self.udp_rx.lock().await;
         match rx.recv().await {
             Some(data) => Ok((self.src_addr.clone(), self.dst_addr.clone(), data)),
@@ -428,7 +429,7 @@ impl AnyPacket for UdpHandler {
         }
     }
 
-    async fn recv_many(&self) -> anyhow::Result<Vec<(TargetAddr, TargetAddr, Bytes)>> {
+    async fn recv_many(&self) -> anyhow::Result<Vec<PacketInfo>> {
         let mut rx = self.udp_rx.lock().await;
         let first = match rx.recv().await {
             Some(data) => data,

@@ -20,7 +20,7 @@ use tracing::debug;
 use tracing::error;
 use tracing::warn;
 
-use crate::proxy::outbound::AnyPacket;
+use crate::proxy::outbound::{AnyPacket, PacketInfo};
 use crate::proxy::{SessionCloser, TargetAddr};
 use crate::utils::format_duration;
 use crate::utils::keyed_notify::KeyedNotify;
@@ -590,7 +590,7 @@ impl AnyPacket for ShadowQuicUdpPacket {
         Ok(buf.len())
     }
 
-    async fn recv_many(&self) -> anyhow::Result<Vec<(SourceAddr, TargetAddr, Bytes)>> {
+    async fn recv_many(&self) -> anyhow::Result<Vec<PacketInfo>> {
         let mut rx = self.receiver.recveiver.lock().await;
 
         let mut buffer = Vec::new();
@@ -602,7 +602,7 @@ impl AnyPacket for ShadowQuicUdpPacket {
         Ok(results)
     }
 
-    async fn recv_from(&self) -> anyhow::Result<(SourceAddr, TargetAddr, Bytes)> {
+    async fn recv_from(&self) -> anyhow::Result<PacketInfo> {
         let mut rx = self.receiver.recveiver.lock().await;
 
         match rx.recv().await {

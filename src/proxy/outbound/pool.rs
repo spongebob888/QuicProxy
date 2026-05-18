@@ -1,4 +1,4 @@
-use crate::proxy::outbound::{AnyOutbound, AnyPacket, AnyStream};
+use crate::proxy::outbound::{AnyOutbound, AnyPacket, AnyStream, PacketInfo};
 use crate::proxy::{SourceAddr, TargetAddr};
 use crate::utils::new_io_other_error;
 use anyhow::Result;
@@ -34,7 +34,7 @@ impl AnyPacket for _PoolUdpOutbound {
         self.inner.send_to(buf, target, from).await
     }
 
-    async fn recv_from(&self) -> Result<(TargetAddr, TargetAddr, Bytes)> {
+    async fn recv_from(&self) -> Result<PacketInfo> {
         self.inner.recv_from().await
     }
 

@@ -711,11 +711,8 @@ impl FakeIPDNS {
             .as_ref()
             .ok_or_else(|| anyhow!("dns '{}' requires cache", tag))?;
 
-        let cache = Cache::new_with_tag(
-            cache_name.as_str(),
-            format!("fakeip:{}", tag),
-        )
-        .map_err(|e| anyhow!("dns '{}' failed to init cache: {:?}", tag, e))?;
+        let cache = Cache::new_with_tag(cache_name.as_str(), format!("fakeip:{}", tag))
+            .map_err(|e| anyhow!("dns '{}' failed to init cache: {:?}", tag, e))?;
 
         let ipv4_cursor = Self::load_cursor(&cache, Self::IPV4_CURSOR_CACHE_KEY);
         let ipv6_cursor = Self::load_cursor(&cache, Self::IPV6_CURSOR_CACHE_KEY);
@@ -843,7 +840,11 @@ impl FakeIPDNS {
                     Some(domain)
                 }
             }
-            _ => None,
+            Ok(None) => None,
+            Err(e) => {
+                error!("{}", e);
+                None
+            }
         }
     }
 }

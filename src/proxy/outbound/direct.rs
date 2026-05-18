@@ -1,6 +1,6 @@
 use crate::config::OutboundConfig;
 use crate::dns::resolve_target;
-use crate::proxy::outbound::{AnyOutbound, AnyPacket, AnyStream};
+use crate::proxy::outbound::{AnyOutbound, AnyPacket, AnyStream, PacketInfo};
 use crate::proxy::{SessionCloser, SourceAddr, TargetAddr};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -69,14 +69,14 @@ impl AnyPacket for DirectUdpOutbound {
             .context("send_to failed")
     }
 
-    async fn recv_from(&self) -> Result<(SourceAddr, TargetAddr, Bytes)> {
+    async fn recv_from(&self) -> Result<PacketInfo> {
         let mut buf = BytesMut::with_capacity(1024 * 2);
         let (n, addr) = self.socket.recv_buf_from(&mut buf).await?;
         buf.truncate(n);
         Ok((self.reverse(addr)?, TargetAddr::dummy(), buf.freeze()))
     }
 
-    async fn recv_many(&self) -> anyhow::Result<Vec<(TargetAddr, TargetAddr, Bytes)>> {
+    async fn recv_many(&self) -> anyhow::Result<Vec<PacketInfo>> {
         let first = self.recv_from().await?;
         let mut results = vec![first];
         loop {

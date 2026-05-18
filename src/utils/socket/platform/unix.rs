@@ -2,6 +2,7 @@ use std::io;
 
 use crate::app::net::OutboundInterface;
 
+#[allow(dead_code)]
 pub(crate) fn must_bind_socket_on_interface(
     #[allow(unused_variables)] socket: &socket2::Socket,
     iface: &OutboundInterface,

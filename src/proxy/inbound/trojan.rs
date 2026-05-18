@@ -1,7 +1,7 @@
 use crate::config::InboundConfig;
 use anyhow::Context;
 use crate::proxy::QuicTlsConfig;
-use crate::proxy::outbound::{AnyPacket, AnyStream};
+use crate::proxy::outbound::{AnyPacket, AnyStream, PacketInfo};
 use crate::proxy::router::{Router, get_router};
 use crate::proxy::{SourceAddr, TargetAddr, inbound};
 use crate::utils::new_io_other_error;
@@ -56,7 +56,7 @@ impl AnyPacket for TrojanInboundPacket {
         Ok(buf.len())
     }
 
-    async fn recv_from(&self) -> anyhow::Result<(TargetAddr, TargetAddr, Bytes)> {
+    async fn recv_from(&self) -> anyhow::Result<PacketInfo> {
         let mut rx = self.rx.lock().await;
 
         let target = TargetAddr::read_from(&mut *rx).await?;

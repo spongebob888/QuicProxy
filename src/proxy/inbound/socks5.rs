@@ -1,6 +1,6 @@
 use crate::config::InboundConfig;
 use crate::proxy::inbound::{AnyInbound, create_tcp_listener, setup_system_proxy};
-use crate::proxy::outbound::AnyPacket;
+use crate::proxy::outbound::{AnyPacket, PacketInfo};
 use crate::proxy::router::{Router, get_router, start_udp_loop};
 use crate::proxy::{SourceAddr, TargetAddr};
 use crate::utils::new_io_timeout_error;
@@ -206,7 +206,7 @@ impl AnyPacket for Socks5InboundPacket {
             .map_err(Into::into)
     }
 
-    async fn recv_from(&self) -> anyhow::Result<(TargetAddr, TargetAddr, Bytes)> {
+    async fn recv_from(&self) -> anyhow::Result<PacketInfo> {
         let mut buf = BytesMut::with_capacity(1024 * 2);
         loop {
             buf.clear();

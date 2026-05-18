@@ -1,5 +1,5 @@
 use crate::proxy::observe::{ConnectionTracker, Observer, Stats};
-use crate::proxy::outbound::AnyPacket;
+use crate::proxy::outbound::{AnyPacket, PacketInfo};
 use crate::proxy::{SessionCloser, SourceAddr, TargetAddr};
 use async_trait::async_trait;
 use std::pin::Pin;
@@ -32,7 +32,7 @@ impl AnyPacket for ObservedPacket {
         Ok(n)
     }
 
-    async fn recv_from(&self) -> anyhow::Result<(TargetAddr, TargetAddr, bytes::Bytes)> {
+    async fn recv_from(&self) -> anyhow::Result<PacketInfo> {
         let (src, dst, data) = self.inner.recv_from().await?;
         let n = data.len();
         self.observer

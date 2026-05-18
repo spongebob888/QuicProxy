@@ -483,7 +483,7 @@ impl Router {
             out_packet
                 .send_to(Bytes::copy_from_slice(packet), target_addr, source_addr)
                 .await?;
-            debug!("send 1 packets from {} to {}", source_addr, target_addr);
+            trace!("send 1 packets from {} to {}", source_addr, target_addr);
         }
 
         // ==========================================
@@ -512,13 +512,7 @@ impl Router {
                                 t1_source,
                                 t1_target
                             );
-                            let items: Vec<_> = packets
-                                .into_iter()
-                                .map(|(_src, _dst, packet)| {
-                                    (packet, t1_target.clone(), t1_source.clone())
-                                })
-                                .collect();
-                            if let Err(e) = t1_out.send_many(&items).await {
+                            if let Err(e) = t1_out.send_many(&packets).await {
                                 info!("UDP session quit because [outbound err: {:#}]", e);
                                 break;
                             }
@@ -548,19 +542,13 @@ impl Router {
                 loop {
                     match t2_out.recv_many().await {
                         Ok(packets) => {
-                            debug!(
+                            trace!(
                                 "receiving {} packets from {} to {}",
                                 packets.len(),
                                 t2_target,
                                 t2_source
                             );
-                            let items: Vec<_> = packets
-                                .into_iter()
-                                .map(|(_src, _dst, packet)| {
-                                    (packet, t2_source.clone(), t2_target.clone())
-                                })
-                                .collect();
-                            if let Err(e) = t2_in.send_many(&items).await {
+                            if let Err(e) = t2_in.send_many(&packets).await {
                                 info!("UDP session quit because [inbound err: {:#}]", e);
                                 break;
                             }

@@ -7,7 +7,7 @@ use tokio::sync::watch;
 use tokio::time::timeout;
 
 use crate::config::OutboundConfig;
-use crate::proxy::outbound::{AnyOutbound, AnyPacket, AnyStream};
+use crate::proxy::outbound::{AnyOutbound, AnyPacket, AnyStream, PacketInfo};
 use crate::proxy::{SourceAddr, TargetAddr};
 
 use crate::utils::new_io_other_error;
@@ -365,7 +365,7 @@ impl AnyPacket for Socks5UdpSocket {
         self.udp.send(&data).await.map_err(Into::into)
     }
 
-    async fn recv_from(&self) -> anyhow::Result<(TargetAddr, TargetAddr, Bytes)> {
+    async fn recv_from(&self) -> anyhow::Result<PacketInfo> {
         let mut buf = BytesMut::with_capacity(1024 * 2);
         let mut abort_rx = self.abort_rx.clone();
         loop {

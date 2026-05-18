@@ -412,8 +412,10 @@ async fn get_trace(
         return Err(StatusCode::BAD_GATEWAY);
     }
 
-    let duration_ms = start.elapsed().as_millis() as u64;
-    state.observer.update_outbound_latency(&params.tag, duration_ms * 1000);
+    let duration_ms = (start.elapsed().as_millis() / 2) as u64;
+    state
+        .observer
+        .update_outbound_latency(&params.tag, duration_ms * 1000);
     Ok(Json(TraceResponse {
         ip,
         loc,

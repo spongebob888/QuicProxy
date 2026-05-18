@@ -1,6 +1,6 @@
 use crate::config::OutboundConfig;
 use crate::dns::get_dns_by_tag;
-use crate::proxy::outbound::{AnyOutbound, AnyPacket, AnyStream};
+use crate::proxy::outbound::{AnyOutbound, AnyPacket, AnyStream, PacketInfo};
 use crate::proxy::{SessionCloser, SourceAddr, TargetAddr};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -35,8 +35,8 @@ impl DnsOutbound {
 }
 
 struct DnsUdpOutbound {
-    rx: Mutex<mpsc::Receiver<(TargetAddr, TargetAddr, Bytes)>>,
-    tx: mpsc::Sender<(TargetAddr, TargetAddr, Bytes)>,
+    rx: Mutex<mpsc::Receiver<PacketInfo>>,
+    tx: mpsc::Sender<PacketInfo>,
     dns: String,
     closer: Arc<SessionCloser>,
 }
@@ -75,7 +75,7 @@ impl AnyPacket for DnsUdpOutbound {
         Ok(len)
     }
 
-    async fn recv_from(&self) -> Result<(TargetAddr, TargetAddr, Bytes)> {
+    async fn recv_from(&self) -> Result<PacketInfo> {
         let mut rx = self.rx.lock().await;
         let closer = self.closer.clone();
         tokio::select! {

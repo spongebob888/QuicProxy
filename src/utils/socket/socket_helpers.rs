@@ -1,6 +1,7 @@
 use crate::utils::interface::InterfaceInfo;
 use std::sync::Arc;
 
+#[cfg(not(target_os = "android"))]
 use super::platform::must_bind_socket_on_interface;
 
 use futures::io;

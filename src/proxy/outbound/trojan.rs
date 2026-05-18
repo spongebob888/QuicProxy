@@ -16,7 +16,7 @@ use crate::config::OutboundConfig;
 use crate::proxy::outbound::pool::PoolOutbound;
 use crate::proxy::{
     QuicTlsConfig, SourceAddr, TargetAddr,
-    outbound::{AnyOutbound, AnyPacket, AnyStream, LazyHandshakeStream},
+    outbound::{AnyOutbound, AnyPacket, AnyStream, LazyHandshakeStream, PacketInfo},
 };
 use crate::utils::new_io_other_error;
 use bytes::Bytes;
@@ -298,7 +298,7 @@ impl AnyPacket for TrojanUdpSocket {
         Ok(buf.len())
     }
 
-    async fn recv_from(&self) -> Result<(TargetAddr, TargetAddr, Bytes)> {
+    async fn recv_from(&self) -> Result<PacketInfo> {
         let mut rx = self.rx.lock().await;
 
         let target = TargetAddr::read_from(&mut *rx).await?;

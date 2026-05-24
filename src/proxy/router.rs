@@ -143,14 +143,13 @@ impl Router {
         final_target: &TargetAddr,
         target: &TargetAddr,
         is_fakeip: bool,
-        latency_micros: u64,
     ) -> (AnyStream, AnyStream, Option<Arc<SessionCloser>>) {
         let Some(obs) = get_observer() else {
             return (inbound_stream, outbound_stream, None);
         };
 
         let inbound_tag_str = inbound_tag.to_string();
-        obs.update_outbound_latency(outbound_tag, latency_micros);
+        // obs.update_outbound_latency(outbound_tag, latency_micros);
 
         let inbound_stats = obs
             .get_inbound_stats(&inbound_tag_str)
@@ -287,7 +286,6 @@ impl Router {
                 &final_target,
                 target,
                 is_fakeip,
-                start_time.elapsed().as_micros() as u64,
             );
 
         info!(

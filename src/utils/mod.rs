@@ -107,20 +107,6 @@ where
     io::Error::new(io::ErrorKind::TimedOut, msg.into())
 }
 
-pub fn get_config<T, D>(config: &HashMap<String, serde_json::Value>, key: &str, default: D) -> T
-where
-    T: DeserializeOwned,
-    D: Into<T>,
-{
-    if let Some(v) = config.get(key) {
-        if let Ok(parsed) = serde_json::from_value::<T>(v.clone()) {
-            return parsed;
-        }
-    }
-
-    return default.into();
-}
-
 // Use 1KB buffer size for mobile, 4KB for desktop
 #[cfg(any(target_os = "android", target_os = "ios"))]
 const BUFFER_SIZE: usize = 1024 * 1;

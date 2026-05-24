@@ -6,12 +6,12 @@ use anyhow::bail;
 use async_trait::async_trait;
 use tracing::{debug, info, warn};
 
+use crate::api::get_outbound_info;
 use crate::cache::Cache;
 use crate::config::OutboundConfig;
 use crate::proxy::TargetAddr;
-use crate::proxy::observe::Observer;
+use crate::proxy::observe::{Observer, get_observer};
 use crate::proxy::outbound::{AnyOutbound, AnyStream};
-use crate::utils::http_outbound::test_latency_via_outbound;
 use crate::utils::time::parse_duration;
 
 use super::{AnyPacket, get_outbound_by_tag};
@@ -33,7 +33,6 @@ pub struct SelectorOutbound {
     selected_index: AtomicUsize,
     observer: Option<Arc<Observer>>,
     cache: Option<Cache<String>>,
-    url: String,
     interval: Duration,
     tolerance: u64,
 }
@@ -73,12 +72,6 @@ impl SelectorOutbound {
             _ => SelectorType::Manual,
         };
 
-        // Common configuration
-        let url = cfg
-            .url
-            .clone()
-            .unwrap_or_else(|| "http://cp.cloudflare.com/generate_204".to_string());
-
         let interval = match cfg.interval {
             Some(secs) => Duration::from_secs(secs),
             None => match selector_type {
@@ -102,8 +95,6 @@ impl SelectorOutbound {
                 .ok();
         }
 
-        let should_run_test_loop = !url.is_empty();
-
         let outbound = Arc::new(Self {
             tag,
             selector_type,
@@ -114,20 +105,14 @@ impl SelectorOutbound {
             selected_index: AtomicUsize::new(selected_index),
             observer: None,
             interval,
-            url,
             tolerance,
             cache,
         });
 
-        // Start test loop for both modes
-        // - Manual: periodically updates latency data only
-        // - UrlTest: periodically updates latency AND auto-selects best node
-        if should_run_test_loop {
-            let clone = outbound.clone();
-            tokio::spawn(async move {
-                clone.run_test_loop().await;
-            });
-        }
+        let clone = outbound.clone();
+        tokio::spawn(async move {
+            clone.run_test_loop().await;
+        });
 
         Ok(outbound)
     }
@@ -148,9 +133,14 @@ impl SelectorOutbound {
     }
 
     async fn check_all(&self) {
-        if self.url.is_empty() {
+        let Some(observer) = self.observer.clone().or_else(get_observer) else {
+            debug!(
+                "{} [{}] skipped outbound info check: observer not ready",
+                self.protocol(),
+                self.tag
+            );
             return;
-        }
+        };
 
         debug!(
             "{} [{}] starting latency check...",
@@ -161,29 +151,40 @@ impl SelectorOutbound {
         let mut handles = Vec::with_capacity(self.outbounds.len());
 
         for (i, handler) in self.outbounds.iter().enumerate() {
-            let handler_clone = handler.clone();
-            let url = self.url.clone();
+            let tag = handler.tag().to_string();
+            let observer = observer.clone();
             handles.push(tokio::spawn(async move {
-                (
-                    i,
-                    test_latency_via_outbound(
-                        handler_clone.clone(),
-                        &url,
-                        handler_clone.connect_timeout(),
-                    )
-                    .await,
-                )
+                let result = get_outbound_info(&tag, observer).await;
+                (i, tag, result)
             }));
         }
 
         let mut results = Vec::with_capacity(self.outbounds.len());
 
         for handle in handles {
-            if let Ok((i, latency)) = handle.await {
-                if let Some(us) = latency {
-                    results.push((i, us));
-                    if let Some(observer) = &self.observer {
-                        observer.update_outbound_latency(self.outbounds[i].tag(), us);
+            if let Ok((i, tag, result)) = handle.await {
+                match result {
+                    Ok(trace) => {
+                        let us = trace.duration_ms.saturating_mul(1000);
+                        results.push((i, us));
+                        debug!(
+                            "{} [{}] outbound [{}] trace ip={} loc={} latency={} ms",
+                            self.protocol(),
+                            self.tag,
+                            tag,
+                            trace.ip,
+                            trace.loc,
+                            trace.duration_ms
+                        );
+                    }
+                    Err(err) => {
+                        debug!(
+                            "{} [{}] outbound [{}] trace failed: {}",
+                            self.protocol(),
+                            self.tag,
+                            tag,
+                            err
+                        );
                     }
                 }
             }
@@ -197,10 +198,6 @@ impl SelectorOutbound {
             }
 
             let min_latency = results.iter().map(|(_, l)| *l).min().unwrap_or(0);
-
-            if let Some(observer) = &self.observer {
-                observer.update_outbound_latency(&self.tag, min_latency);
-            }
 
             // Find the first outbound (in list order) that is within tolerance
             let mut best_idx = results[0].0;
@@ -242,6 +239,10 @@ impl SelectorOutbound {
     pub fn get_selected_tag(&self) -> Option<&str> {
         let idx = self.selected_index.load(Ordering::Relaxed);
         self.outbound_tags.get(idx).map(|t| t.as_ref())
+    }
+
+    pub fn get_outbound_tags(&self) -> Vec<String> {
+        self.outbound_tags.clone()
     }
 
     pub fn select_by_tag(&self, tag: &str) -> bool {

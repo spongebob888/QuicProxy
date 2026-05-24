@@ -2,8 +2,8 @@ use bytesize::ByteSize;
 use dashmap::DashMap;
 use serde::{Serialize, Serializer};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::OnceCell;
 use tracing::info;
 
@@ -187,11 +187,19 @@ pub struct NodeStats {
     pub stats: Arc<Stats>,
 }
 
+#[derive(Debug, Clone)]
+pub struct OutboundTraceInfo {
+    pub ip: String,
+    pub loc: String,
+    pub latency_us: u64,
+}
+
 use crate::proxy::SessionCloser;
 
 pub struct Observer {
     inbounds: DashMap<String, Arc<NodeStats>>,
     outbounds: DashMap<String, Arc<NodeStats>>,
+    outbound_traces: DashMap<String, OutboundTraceInfo>,
     global_stats: Arc<Stats>,
     connections: DashMap<String, Arc<ConnectionTracker>>,
     closers: DashMap<String, Arc<SessionCloser>>,
@@ -203,6 +211,7 @@ impl Observer {
         Self {
             inbounds: DashMap::new(),
             outbounds: DashMap::new(),
+            outbound_traces: DashMap::new(),
             global_stats: Arc::new(Stats::default()),
             connections: DashMap::new(),
             closers: DashMap::new(),
@@ -235,6 +244,23 @@ impl Observer {
     pub fn kill_all_connections(&self) {
         for closer in self.closers.iter() {
             closer.close();
+        }
+    }
+
+    pub fn kill_connections_by_outbound(&self, tag: &str) {
+        let to_close: Vec<String> = self
+            .connections
+            .iter()
+            .filter(|entry| entry.value().outbound_tag == tag)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        info!("{} connection to delete", to_close.len());
+        for id in to_close {
+            if let Some((_, closer)) = self.closers.remove(&id) {
+                closer.close();
+                info!("Closed connection: {}", id);
+            }
         }
     }
 
@@ -360,6 +386,30 @@ impl Observer {
         }
     }
 
+    pub fn update_outbound_trace(
+        &self,
+        tag: &str,
+        latency_us: u64,
+        ip: impl Into<String>,
+        loc: impl Into<String>,
+    ) {
+        if let Some(node) = self.outbounds.get(tag) {
+            node.stats.record_latency_us(latency_us);
+        }
+        self.outbound_traces.insert(
+            tag.to_string(),
+            OutboundTraceInfo {
+                ip: ip.into(),
+                loc: loc.into(),
+                latency_us,
+            },
+        );
+    }
+
+    pub fn get_outbound_trace(&self, tag: &str) -> Option<OutboundTraceInfo> {
+        self.outbound_traces.get(tag).map(|v| v.value().clone())
+    }
+
     pub fn get_inbound_stats(&self, tag: &str) -> Option<Arc<NodeStats>> {
         self.inbounds.get(tag).map(|v| v.clone())
     }
@@ -385,24 +435,23 @@ impl Observer {
     pub fn log_statistics(&self) {
         info!("--- Statistics ---");
 
-        let log_nodes =
-            |label: &str, nodes: Vec<(String, Arc<NodeStats>)>| {
-                if !nodes.is_empty() {
-                    info!("{}:", label);
-                    for (tag, node) in nodes {
-                        info!(
-                            "  [{}({})]: TCP: {}, UDP: {}, Up: {}, Down: {}, Latency: {}",
-                            tag,
-                            node.protocol,
-                            node.stats.get_active_tcp_conns(),
-                            node.stats.get_active_udp_sessions(),
-                            ByteSize(node.stats.get_upload_bytes()),
-                            ByteSize(node.stats.get_download_bytes()),
-                            format_us(node.stats.get_latency_us())
-                        );
-                    }
+        let log_nodes = |label: &str, nodes: Vec<(String, Arc<NodeStats>)>| {
+            if !nodes.is_empty() {
+                info!("{}:", label);
+                for (tag, node) in nodes {
+                    info!(
+                        "  [{}({})]: TCP: {}, UDP: {}, Up: {}, Down: {}, Latency: {}",
+                        tag,
+                        node.protocol,
+                        node.stats.get_active_tcp_conns(),
+                        node.stats.get_active_udp_sessions(),
+                        ByteSize(node.stats.get_upload_bytes()),
+                        ByteSize(node.stats.get_download_bytes()),
+                        format_us(node.stats.get_latency_us())
+                    );
                 }
-            };
+            }
+        };
 
         log_nodes("Inbounds", self.get_all_inbounds());
         log_nodes("Outbounds", self.get_all_outbounds());
@@ -435,9 +484,7 @@ impl Observer {
     pub fn spawn_periodic_log(self: &Arc<Self>, interval_secs: u64) {
         let observer = self.clone();
         shutdown::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-                interval_secs,
-            ));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             loop {
                 interval.tick().await;
                 observer.log_statistics();

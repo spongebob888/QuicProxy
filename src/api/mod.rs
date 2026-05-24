@@ -86,6 +86,7 @@ pub async fn init_api(cfg: &Config) -> Result<Option<tokio::sync::mpsc::Receiver
 #[derive(Deserialize)]
 struct DeleteConnectionParams {
     id: Option<String>,
+    outbound: Option<String>,
     #[serde(default)]
     all: bool,
 }
@@ -95,14 +96,14 @@ async fn delete_connections(
     headers: HeaderMap,
     Query(params): Query<DeleteConnectionParams>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if let Err(code) = check_auth(&headers, &state.password) {
-        return Err(code);
-    }
+    check_auth(&headers, &state.password)?;
 
     if params.all {
         state.observer.kill_all_connections();
     } else if let Some(id) = &params.id {
         state.observer.kill_connection(id);
+    } else if let Some(outbound) = &params.outbound {
+        state.observer.kill_connections_by_outbound(outbound);
     } else {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -114,9 +115,7 @@ async fn get_connections(
     State(state): State<ApiState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if let Err(code) = check_auth(&headers, &state.password) {
-        return Err(code);
-    }
+    check_auth(&headers, &state.password)?;
 
     let connections = state.observer.get_all_connections();
     let data: Vec<ConnectionData> = connections
@@ -170,12 +169,34 @@ async fn get_observe(
                 upload: node.stats.get_upload_bytes(),
                 download: node.stats.get_download_bytes(),
                 latency: 0,
+                ip: String::new(),
+                loc: String::new(),
+                outbounds: None,
+                selected_node: None,
             },
         );
     }
 
     let mut outbounds = HashMap::new();
     for (tag, node) in state.observer.get_all_outbounds() {
+        let trace = state.observer.get_outbound_trace(&tag);
+        let latency = trace
+            .as_ref()
+            .map(|t| t.latency_us)
+            .unwrap_or_else(|| node.stats.get_latency_us());
+        let ip = trace.as_ref().map(|t| t.ip.clone()).unwrap_or_default();
+        let loc = trace.as_ref().map(|t| t.loc.clone()).unwrap_or_default();
+        let (selector_outbounds, selected_node) = OUTBOUNDS_MAP
+            .get(&tag)
+            .and_then(|entry| {
+                let selector = entry.value().as_selector()?;
+                Some((
+                    Some(selector.get_outbound_tags()),
+                    selector.get_selected_tag().map(|s| s.to_string()),
+                ))
+            })
+            .unwrap_or((None, None));
+
         outbounds.insert(
             tag.clone(),
             StatsData {
@@ -184,7 +205,11 @@ async fn get_observe(
                 udp_sessions: node.stats.get_active_udp_sessions(),
                 upload: node.stats.get_upload_bytes(),
                 download: node.stats.get_download_bytes(),
-                latency: node.stats.get_latency_us(),
+                latency,
+                ip,
+                loc,
+                outbounds: selector_outbounds,
+                selected_node,
             },
         );
     }
@@ -207,6 +232,7 @@ async fn get_mode(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&headers, &state.password)?;
+
     let mode = state.router.get_mode().await;
     Ok(Json(json!({ "mode": mode })))
 }
@@ -234,6 +260,10 @@ struct StatsData {
     upload: u64,
     download: u64,
     latency: u64,
+    ip: String,
+    loc: String,
+    outbounds: Option<Vec<String>>,
+    selected_node: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -270,16 +300,37 @@ async fn get_outbounds(
     for entry in OUTBOUNDS_MAP.iter() {
         let tag = entry.key().clone();
         let outbound = entry.value().clone();
-        let latency = state
+        let default_latency = state
             .observer
             .get_outbound_stats(&tag)
             .map(|n| n.stats.get_latency_us())
             .unwrap_or(0);
 
+        let trace = state.observer.get_outbound_trace(&tag);
+        let latency = trace
+            .as_ref()
+            .map(|t| t.latency_us)
+            .unwrap_or(default_latency);
+        let ip = trace.as_ref().map(|t| t.ip.clone()).unwrap_or_default();
+        let loc = trace.as_ref().map(|t| t.loc.clone()).unwrap_or_default();
+        let (selector_outbounds, selected_node) = outbound
+            .as_selector()
+            .map(|selector| {
+                (
+                    Some(selector.get_outbound_tags()),
+                    selector.get_selected_tag().map(|s| s.to_string()),
+                )
+            })
+            .unwrap_or((None, None));
+
         list.push(OutboundInfo {
             tag,
             protocol: outbound.protocol().to_string(),
             latency,
+            ip,
+            loc,
+            outbounds: selector_outbounds,
+            selected_node,
         });
     }
 
@@ -291,6 +342,10 @@ struct OutboundInfo {
     tag: String,
     protocol: String,
     latency: u64,
+    ip: String,
+    loc: String,
+    outbounds: Option<Vec<String>>,
+    selected_node: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -332,10 +387,10 @@ struct TraceParams {
 }
 
 #[derive(Serialize)]
-struct TraceResponse {
-    ip: String,
-    loc: String,
-    duration_ms: u64,
+pub struct TraceResponse {
+    pub ip: String,
+    pub loc: String,
+    pub duration_ms: u64,
 }
 
 #[derive(Deserialize)]
@@ -365,8 +420,18 @@ async fn get_trace(
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&headers, &state.password)?;
 
+    if let Ok(r) = get_outbound_info(&params.tag, state.observer.clone()).await {
+        return Ok(Json(r));
+    }
+    return Err(StatusCode::BAD_GATEWAY);
+}
+
+pub async fn get_outbound_info(
+    outbound_tag: &str,
+    observer: Arc<Observer>,
+) -> Result<TraceResponse> {
     let start = std::time::Instant::now();
-    let outbound = get_outbound_by_tag(&params.tag);
+    let outbound = get_outbound_by_tag(outbound_tag);
 
     let response = request_via_outbound(
         outbound.clone(),
@@ -376,20 +441,10 @@ async fn get_trace(
         3,
         None,
     )
-    .await
-    .map_err(|error| {
-        if error
-            .downcast_ref::<tokio::time::error::Elapsed>()
-            .is_some()
-        {
-            StatusCode::GATEWAY_TIMEOUT
-        } else {
-            StatusCode::BAD_GATEWAY
-        }
-    })?;
+    .await?;
 
     if !response.status.is_success() {
-        return Err(StatusCode::BAD_GATEWAY);
+        bail!("failed to get response")
     }
 
     let response = String::from_utf8_lossy(&response.body);
@@ -409,18 +464,16 @@ async fn get_trace(
     }
 
     if ip.is_empty() || loc.is_empty() {
-        return Err(StatusCode::BAD_GATEWAY);
+        bail!("failed to get response")
     }
 
     let duration_ms = (start.elapsed().as_millis() / 2) as u64;
-    state
-        .observer
-        .update_outbound_latency(&params.tag, duration_ms * 1000);
-    Ok(Json(TraceResponse {
+    observer.update_outbound_trace(outbound_tag, duration_ms * 1000, ip.clone(), loc.clone());
+    Ok(TraceResponse {
         ip,
         loc,
         duration_ms,
-    }))
+    })
 }
 
 async fn get_request(

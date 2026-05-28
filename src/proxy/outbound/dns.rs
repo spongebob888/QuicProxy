@@ -55,7 +55,7 @@ impl AnyPacket for DnsUdpOutbound {
         let target = target.clone();
         let from = from.clone();
         let len = buf.len();
-        let dns_server = get_dns_by_tag(&self.dns);
+        let dns_server = get_dns_by_tag(&self.dns)?;
 
         {
             let mut last = self.last_buf.lock().await;

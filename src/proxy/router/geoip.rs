@@ -7,7 +7,7 @@ use crate::dns::resolve_target_base2;
 use crate::proxy::TargetAddr;
 use crate::utils::format_duration;
 use crate::utils::now_timestamp;
-use anyhow::Context;
+use anyhow::{Context, Result, bail};
 use dashmap::DashMap;
 use memmap2::Mmap;
 use std::sync::{Arc, LazyLock};
@@ -33,14 +33,11 @@ pub async fn init_geoip(cfg: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn get_geoip_by_tag(tag: &str) -> Arc<Geoip> {
+pub fn get_geoip_by_tag(tag: &str) -> Result<Arc<Geoip>> {
     match GEOIP_MAP.get(tag) {
-        Some(r) => return r.clone(),
-        None => {
-            tracing::error!("can not find geoip: {}", tag);
-            std::process::exit(1);
-        }
-    };
+        Some(r) => Ok(r.clone()),
+        None => bail!("can not find geoip: {}", tag),
+    }
 }
 
 pub struct Geoip {
@@ -59,7 +56,7 @@ impl Geoip {
             .clone()
             .context(format!("geoip '{}' requires dns", tag))?;
 
-        let dns = get_dns_by_tag(&dns_name);
+        let dns = get_dns_by_tag(&dns_name)?;
         let ip_country: Vec<String> = cfg.ip_country.iter().map(|s| s.to_uppercase()).collect();
 
         let mut cache = None;
@@ -80,7 +77,7 @@ impl Geoip {
             tag,
             ttl: cfg.ttl.clone(),
             cache,
-            db: get_geoip_db_by_tag(&cfg.db),
+            db: get_geoip_db_by_tag(&cfg.db)?,
             dns,
             ip_country,
         })

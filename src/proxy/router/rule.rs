@@ -138,8 +138,8 @@ impl Rule {
             .transpose()?;
 
         // 6. DNS / Reverse: 直接借用，避免多余 clone
-        let reverse = cfg.reverse.as_ref().map(|tag| get_dns_by_tag(tag));
-        let dns = cfg.dns.as_ref().map(|tag| get_dns_by_tag(tag));
+        let reverse = cfg.reverse.as_ref().map(|tag| get_dns_by_tag(tag)).transpose()?;
+        let dns = cfg.dns.as_ref().map(|tag| get_dns_by_tag(tag)).transpose()?;
 
         // 7. 字符串/集合字段: 过滤空值并克隆
         let port = cfg.port.as_ref().filter(|v| !v.is_empty()).cloned();
@@ -322,7 +322,14 @@ impl Rule {
             if !geoip.is_empty() {
                 let mut is_matched = false;
                 for item in geoip.iter() {
-                    match get_geoip_by_tag(item).lookup(target).await {
+                    let geoip = match get_geoip_by_tag(item) {
+                        Ok(g) => g,
+                        Err(e) => {
+                            error!("can not find geoip {}: {}", item, e);
+                            continue;
+                        }
+                    };
+                    match geoip.lookup(target).await {
                         Ok(r) => {
                             if r {
                                 is_matched = true;

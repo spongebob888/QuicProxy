@@ -39,14 +39,11 @@ pub async fn init_geoip_db(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-pub fn get_geoip_db_by_tag(tag: &str) -> Arc<GeoipDB> {
+pub fn get_geoip_db_by_tag(tag: &str) -> Result<Arc<GeoipDB>> {
     match GEOIP_DB_MAP.get(tag) {
-        Some(r) => return r.clone(),
-        None => {
-            tracing::error!("can not find db: {}", tag);
-            std::process::exit(1);
-        }
-    };
+        Some(r) => Ok(r.clone()),
+        None => bail!("can not find db: {}", tag),
+    }
 }
 
 pub struct GeoipDB {
@@ -63,20 +60,16 @@ impl GeoipDB {
     pub fn new(tag: String, cfg: &GeoipDBConfig) -> Result<Self> {
         let path = cfg.path.clone();
         if path.is_empty() {
-            error!("geoip_db '{}' requires a path", tag);
-            std::process::exit(1);
+            bail!("geoip_db '{}' requires a path", tag);
         }
         let update_interval =
             parse_duration(&cfg.update_interval.clone().unwrap_or("48h".to_string()));
         let mut cache = None;
         if let Some(cache_name) = cfg.cache.clone() {
-            cache = Cache::new_with_tag(&cache_name, "geoip_db".to_string())
-                .map(Arc::new)
-                .map_err(|e| {
-                    error!("can not find cache tag: {:?}", e);
-                    std::process::exit(1);
-                })
-                .ok();
+            cache = Some(Arc::new(
+                Cache::new_with_tag(&cache_name, "geoip_db".to_string())
+                    .map_err(|e| anyhow::anyhow!("can not find cache tag: {:?}", e))?,
+            ));
         }
 
         let mut download_outbound = get_default_outbound();

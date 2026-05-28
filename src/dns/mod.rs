@@ -66,17 +66,14 @@ pub fn init_dns(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-pub fn get_dns_by_tag(tag: &str) -> Arc<dyn AnyDNS> {
+pub fn get_dns_by_tag(tag: &str) -> Result<Arc<dyn AnyDNS>> {
     match DNS_MAP.get(tag) {
-        Some(r) => return r.clone(),
-        None => {
-            error!("can not find dns: {}", tag);
-            std::process::exit(1);
-        }
-    };
+        Some(r) => Ok(r.clone()),
+        None => bail!("can not find dns: {}", tag),
+    }
 }
 
-pub fn get_default_dns() -> Arc<dyn AnyDNS> {
+pub fn get_default_dns() -> Result<Arc<dyn AnyDNS>> {
     get_dns_by_tag("default_server".as_ref())
 }
 
@@ -124,8 +121,8 @@ pub async fn resolve_target(
     }
 
     let dns_server = match dns_server_tag {
-        Some(tag) => get_dns_by_tag(tag),
-        None => get_default_dns(),
+        Some(tag) => get_dns_by_tag(tag)?,
+        None => get_default_dns()?,
     };
 
     resolve_target_base(address, dns_server).await
@@ -143,8 +140,8 @@ pub async fn resolve_str(
 
     // 否则视为域名处理
     let dns_server = match dns_server_tag {
-        Some(tag) => get_dns_by_tag(tag),
-        None => get_default_dns(),
+        Some(tag) => get_dns_by_tag(tag)?,
+        None => get_default_dns()?,
     };
 
     let ip = resolve_domain(address, dns_server).await?;

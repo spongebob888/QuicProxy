@@ -44,6 +44,15 @@ impl ConnectionTracker {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DstTrafficEntry {
+    pub dst: String,
+    pub outbound_tag: String,
+    pub upload: u64,
+    pub download: u64,
+    pub last_active: u64,
+}
+
 #[derive(Debug)]
 pub struct Stats {
     active_tcp_conns: AtomicU64,
@@ -203,6 +212,7 @@ pub struct Observer {
     global_stats: Arc<Stats>,
     connections: DashMap<String, Arc<ConnectionTracker>>,
     closers: DashMap<String, Arc<SessionCloser>>,
+    dst_traffic: DashMap<String, DstTrafficEntry>,
     mem_stats: Mutex<(u64, u64, u64)>,
 }
 
@@ -215,6 +225,7 @@ impl Observer {
             global_stats: Arc::new(Stats::default()),
             connections: DashMap::new(),
             closers: DashMap::new(),
+            dst_traffic: DashMap::new(),
             mem_stats: Mutex::new((0, 0, 0)),
         }
     }
@@ -231,8 +242,34 @@ impl Observer {
     }
 
     pub fn remove_connection(&self, id: &str) {
-        self.connections.remove(id);
-        self.closers.remove(id);
+        if let Some((_, conn)) = self.connections.remove(id) {
+            self.closers.remove(id);
+            let upload = conn.upload.load(Ordering::Relaxed);
+            let download = conn.download.load(Ordering::Relaxed);
+            if upload > 0 || download > 0 {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                self.dst_traffic
+                    .entry(conn.dst.clone())
+                    .and_modify(|e| {
+                        e.upload = e.upload.wrapping_add(upload);
+                        e.download = e.download.wrapping_add(download);
+                        e.last_active = now;
+                        if !conn.outbound_tag.is_empty() {
+                            e.outbound_tag = conn.outbound_tag.clone();
+                        }
+                    })
+                    .or_insert(DstTrafficEntry {
+                        dst: conn.dst.clone(),
+                        outbound_tag: conn.outbound_tag.clone(),
+                        upload,
+                        download,
+                        last_active: now,
+                    });
+            }
+        }
     }
 
     pub fn kill_connection(&self, id: &str) {
@@ -266,6 +303,25 @@ impl Observer {
 
     pub fn get_all_connections(&self) -> Vec<Arc<ConnectionTracker>> {
         self.connections.iter().map(|r| r.value().clone()).collect()
+    }
+
+    pub fn get_dst_traffic(&self) -> Vec<DstTrafficEntry> {
+        let mut entries: Vec<DstTrafficEntry> = self
+            .dst_traffic
+            .iter()
+            .map(|r| r.value().clone())
+            .collect();
+        entries.sort_by(|a, b| {
+            (b.upload.wrapping_add(b.download))
+                .cmp(&(a.upload.wrapping_add(a.download)))
+        });
+        entries
+    }
+
+    pub fn drain_dst_traffic(&self) -> Vec<DstTrafficEntry> {
+        let entries = self.get_dst_traffic();
+        self.dst_traffic.clear();
+        entries
     }
 
     pub fn get_global_stats(&self) -> Arc<Stats> {
@@ -343,15 +399,6 @@ impl Observer {
         if let Some(node) = self.inbounds.get(tag) {
             node.stats.add_traffic(upload, download);
         }
-    }
-
-    // Aliases for compatibility
-    pub fn on_outbound_traffic(&self, tag: &str, upload: u64, download: u64) {
-        self.update_outbound_traffic(tag, upload, download);
-    }
-
-    pub fn on_inbound_traffic(&self, tag: &str, upload: u64, download: u64) {
-        self.update_inbound_traffic(tag, upload, download);
     }
 
     pub fn register_inbound(&self, tag: &str, protocol: &str) {

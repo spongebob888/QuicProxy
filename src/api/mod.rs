@@ -59,6 +59,7 @@ pub async fn init_api(cfg: &Config) -> Result<Option<tokio::sync::mpsc::Receiver
         .route("/trace", get(get_trace))
         .route("/request", get(get_request))
         .route("/quit", get(get_quit))
+        .route("/traffic", get(get_traffic))
         .with_state(ApiState {
             password: api.password,
             shutdown_tx: shutdown_tx,
@@ -279,6 +280,15 @@ struct ConnectionData {
     upload: u64,
     download: u64,
     start_time: u64,
+}
+
+#[derive(Serialize)]
+struct TrafficData {
+    dst: String,
+    outbound_tag: String,
+    upload: u64,
+    download: u64,
+    last_active: u64,
 }
 
 #[derive(Serialize)]
@@ -524,4 +534,24 @@ async fn get_request(
         body,
         duration_ms,
     }))
+}
+
+async fn get_traffic(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&headers, &state.password)?;
+
+    let entries = state.observer.drain_dst_traffic();
+    let data: Vec<TrafficData> = entries
+        .into_iter()
+        .map(|e| TrafficData {
+            dst: e.dst,
+            outbound_tag: e.outbound_tag,
+            upload: e.upload,
+            download: e.download,
+            last_active: e.last_active,
+        })
+        .collect();
+    Ok(Json(data))
 }

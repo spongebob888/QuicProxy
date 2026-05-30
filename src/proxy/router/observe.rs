@@ -13,6 +13,7 @@ pub struct ObservedPacket {
     pub tracker: Arc<ConnectionTracker>,
     pub outbound_tag: String,
     pub inbound_tag: String,
+    pub extra_outbound_tag: Option<String>,
 }
 
 #[async_trait]
@@ -25,9 +26,12 @@ impl AnyPacket for ObservedPacket {
     ) -> anyhow::Result<usize> {
         let n = self.inner.send_to(buf, from, target).await?;
         self.observer
-            .on_outbound_traffic(&self.outbound_tag, n as u64, 0);
+            .update_outbound_traffic(&self.outbound_tag, n as u64, 0);
         self.observer
-            .on_inbound_traffic(&self.inbound_tag, n as u64, 0);
+            .update_inbound_traffic(&self.inbound_tag, n as u64, 0);
+        if let Some(ref tag) = self.extra_outbound_tag {
+            self.observer.update_outbound_traffic(tag, n as u64, 0);
+        }
         self.tracker.inc_upload(n as u64);
         Ok(n)
     }
@@ -36,9 +40,12 @@ impl AnyPacket for ObservedPacket {
         let (src, dst, data) = self.inner.recv_from().await?;
         let n = data.len();
         self.observer
-            .on_outbound_traffic(&self.outbound_tag, 0, n as u64);
+            .update_outbound_traffic(&self.outbound_tag, 0, n as u64);
         self.observer
-            .on_inbound_traffic(&self.inbound_tag, 0, n as u64);
+            .update_inbound_traffic(&self.inbound_tag, 0, n as u64);
+        if let Some(ref tag) = self.extra_outbound_tag {
+            self.observer.update_outbound_traffic(tag, 0, n as u64);
+        }
         self.tracker.inc_download(n as u64);
         Ok((src, dst, data))
     }
@@ -64,6 +71,9 @@ impl Drop for ObservedPacket {
     fn drop(&mut self) {
         self.observer.on_outbound_close_udp(&self.outbound_tag);
         self.observer.on_inbound_close_udp(&self.inbound_tag);
+        if let Some(ref tag) = self.extra_outbound_tag {
+            self.observer.on_outbound_close_udp(tag);
+        }
         self.observer.remove_connection(&self.tracker.id);
     }
 }
@@ -71,6 +81,7 @@ impl Drop for ObservedPacket {
 pub struct ObservedStream<S> {
     pub inner: S,
     pub stats: Arc<Stats>,
+    pub extra_stats: Option<Arc<Stats>>,
     pub tracker: Arc<ConnectionTracker>,
     pub observer: Arc<Observer>,
     pub is_inbound: bool,
@@ -80,14 +91,19 @@ impl<S> ObservedStream<S> {
     pub fn new(
         inner: S,
         stats: Arc<Stats>,
+        extra_stats: Option<Arc<Stats>>,
         tracker: Arc<ConnectionTracker>,
         observer: Arc<Observer>,
         is_inbound: bool,
     ) -> Self {
         stats.inc_active_tcp();
+        if let Some(ref s) = extra_stats {
+            s.inc_active_tcp();
+        }
         Self {
             inner,
             stats,
+            extra_stats,
             tracker,
             observer,
             is_inbound,
@@ -98,6 +114,9 @@ impl<S> ObservedStream<S> {
 impl<S> Drop for ObservedStream<S> {
     fn drop(&mut self) {
         self.stats.dec_active_tcp();
+        if let Some(ref s) = self.extra_stats {
+            s.dec_active_tcp();
+        }
         self.observer.remove_connection(&self.tracker.id);
     }
 }
@@ -120,6 +139,13 @@ impl<S: AsyncRead + Unpin> AsyncRead for ObservedStream<S> {
                     } else {
                         self.stats.inc_download(n);
                         self.tracker.inc_download(n);
+                    }
+                    if let Some(ref s) = self.extra_stats {
+                        if self.is_inbound {
+                            s.inc_upload(n);
+                        } else {
+                            s.inc_download(n);
+                        }
                     }
                 }
                 Poll::Ready(Ok(()))
@@ -145,6 +171,13 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for ObservedStream<S> {
                     } else {
                         self.stats.inc_upload(n_u64);
                         self.tracker.inc_upload(n_u64);
+                    }
+                    if let Some(ref s) = self.extra_stats {
+                        if self.is_inbound {
+                            s.inc_download(n_u64);
+                        } else {
+                            s.inc_upload(n_u64);
+                        }
                     }
                 }
                 Poll::Ready(Ok(n))

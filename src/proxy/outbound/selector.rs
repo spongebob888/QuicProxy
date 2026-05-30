@@ -268,6 +268,19 @@ impl SelectorOutbound {
         self.outbound_tags.get(idx).map(|t| t.as_ref())
     }
 
+    pub fn get_effective_tag(&self) -> String {
+        let idx = self.selected_index.load(Ordering::Relaxed);
+        if let Some(child) = self.outbounds.get(idx) {
+            if let Some(sel) = child.as_selector() {
+                return sel.get_effective_tag();
+            }
+        }
+        self.outbound_tags
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| self.tag.clone())
+    }
+
     pub fn get_outbound_tags(&self) -> Vec<String> {
         self.outbound_tags.clone()
     }

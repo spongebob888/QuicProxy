@@ -138,7 +138,7 @@ impl Router {
         inbound_stream: AnyStream,
         outbound_stream: AnyStream,
         inbound_tag: &str,
-        outbound_tag: &str,
+        outbound: &Arc<dyn AnyOutbound>,
         matched_idx: Option<usize>,
         final_target: &TargetAddr,
         target: &TargetAddr,
@@ -149,16 +149,28 @@ impl Router {
         };
 
         let inbound_tag_str = inbound_tag.to_string();
-        // obs.update_outbound_latency(outbound_tag, latency_micros);
+
+        let outbound_tag = outbound.tag().to_string();
+        let outbound_stats_tag = outbound
+            .as_selector()
+            .map(|s| s.get_effective_tag())
+            .unwrap_or_else(|| outbound.tag().to_string());
 
         let inbound_stats = obs
             .get_inbound_stats(&inbound_tag_str)
             .map(|n| n.stats.clone())
             .unwrap_or_default();
         let outbound_stats = obs
-            .get_outbound_stats(outbound_tag)
+            .get_outbound_stats(&outbound_stats_tag)
             .map(|n| n.stats.clone())
             .unwrap_or_default();
+
+        let extra_outbound_stats = if outbound_tag != outbound_stats_tag {
+            obs.get_outbound_stats(&outbound_tag)
+                .map(|n| n.stats.clone())
+        } else {
+            None
+        };
 
         let tracker = Self::new_connection_tracker(
             inbound_tag_str,
@@ -177,6 +189,7 @@ impl Router {
             Box::new(ObservedStream::new(
                 inbound_stream,
                 inbound_stats,
+                None,
                 tracker_arc.clone(),
                 obs.clone(),
                 true,
@@ -184,6 +197,7 @@ impl Router {
             Box::new(ObservedStream::new(
                 outbound_stream,
                 outbound_stats,
+                extra_outbound_stats,
                 tracker_arc,
                 obs.clone(),
                 false,
@@ -275,13 +289,12 @@ impl Router {
         };
 
         // Setup observer wrapper and connection close signals
-        let outbound_tag = outbound.tag().to_string();
         let (mut inbound_stream, mut outbound_stream, session_closer) = self
             .wrap_streams_with_observer(
                 inbound_stream,
                 outbound_stream,
                 inbound_tag,
-                &outbound_tag,
+                &outbound,
                 matched_idx,
                 &final_target,
                 target,
@@ -675,23 +688,27 @@ impl Router {
         let (outbound, final_target, matched_idx, is_fakeip) = self
             .select_out(target_addr, inbound_tag, Some(NetworkType::Udp), payload)
             .await;
-        let tag = outbound.tag().to_string();
+        let tracker_tag = outbound.tag().to_string();
+        let stats_tag = outbound
+            .as_selector()
+            .map(|s| s.get_effective_tag())
+            .unwrap_or_else(|| outbound.tag().to_string());
 
         info!("New UDP session: {} -> {}", source_addr, final_target);
 
         // Connect
         match outbound.connect_packet(&final_target).await {
             Ok(out_packet) => {
-                info!("Connected UDP outbound [{}] for {}", tag, final_target);
+                info!("Connected UDP outbound [{}] for {}", tracker_tag, final_target);
                 // s is already Arc<TrackedPacket>
                 if let Some(obs) = get_observer() {
                     let inbound_tag_str = inbound_tag.to_string();
                     obs.on_inbound_open_udp(&inbound_tag_str);
-                    obs.on_outbound_open_udp(&tag);
+                    obs.on_outbound_open_udp(&stats_tag);
 
                     let tracker = Self::new_connection_tracker(
                         inbound_tag_str.clone(),
-                        tag.clone(),
+                        tracker_tag.clone(),
                         matched_idx,
                         final_target.to_string(),
                         target_addr.to_string(),
@@ -701,12 +718,20 @@ impl Router {
 
                     let tracker_arc = obs.add_connection(tracker, out_packet.closer());
 
+                    let extra_outbound_tag = if tracker_tag != stats_tag {
+                        obs.on_outbound_open_udp(&tracker_tag);
+                        Some(tracker_tag.clone())
+                    } else {
+                        None
+                    };
+
                     let wrapped = ObservedPacket {
                         inner: out_packet,
                         observer: obs.clone(),
                         tracker: tracker_arc,
-                        outbound_tag: tag.clone(),
+                        outbound_tag: stats_tag,
                         inbound_tag: inbound_tag_str,
+                        extra_outbound_tag,
                     };
                     Ok((Arc::new(wrapped), final_target))
                 } else {
@@ -714,7 +739,7 @@ impl Router {
                 }
             }
             Err(e) => {
-                bail!("Failed to connect UDP outbound {}: {:?}", tag, e)
+                bail!("Failed to connect UDP outbound {}: {:?}", tracker_tag, e)
             }
         }
     }

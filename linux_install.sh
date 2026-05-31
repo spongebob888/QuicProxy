@@ -15,7 +15,7 @@ BIN_PATH="${INSTALL_DIR}/quicproxy"
 SERVICE_NAME="quicproxy"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 GITHUB_API="https://api.github.com/repos/${REPO}/releases/latest"
-ASSET_PATTERN="quicproxy-core-.*-linux-x64.tar.gz"
+DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/quicproxy-core-linux-x64.tar.gz"
 
 TMPDIR=""
 
@@ -105,7 +105,7 @@ detect_latest_version() {
   local api_response
   api_response=$(curl -sfL --connect-timeout 10 --max-time 30 "$GITHUB_API" 2>/dev/null) || {
     log_error "无法访问 GitHub API, 请检查网络连接"
-    log_info "你也可以手动指定版本: VERSION=v1.0.0 bash linux_install.sh"
+    log_info "你也可以手动指定版本: VERSION=v1.0.0 sudo bash linux_install.sh"
     exit 1
   }
 
@@ -113,26 +113,10 @@ detect_latest_version() {
 
   if [[ -z "$TAG_NAME" ]]; then
     log_error "解析 GitHub API 响应失败"
-    log_info "原始响应片段:"
-    echo "$api_response" | head -20
-    exit 1
-  fi
-
-  DOWNLOAD_URL=$(echo "$api_response" | grep -o "\"browser_download_url\": *\"[^\"]*${ASSET_PATTERN//\*/}[^\"]*\"" | head -1 | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/')
-
-  if [[ -z "$DOWNLOAD_URL" ]]; then
-    DOWNLOAD_URL=$(echo "$api_response" | grep -o "\"browser_download_url\": *\"[^\"]*linux-x64[^\"]*\.tar\.gz\"" | head -1 | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/')
-  fi
-
-  if [[ -z "$DOWNLOAD_URL" ]]; then
-    log_error "未找到匹配的 Linux x64 下载资源"
-    log_info "可用的下载资源:"
-    echo "$api_response" | grep -o '"browser_download_url": *"[^"]*"' | sed 's/.*: *"\([^"]*\)".*/\1/'
     exit 1
   fi
 
   log_info "最新版本: ${TAG_NAME}"
-  log_info "下载地址: ${DOWNLOAD_URL}"
 }
 
 download_and_extract() {
@@ -140,7 +124,7 @@ download_and_extract() {
 
   local tarball="${TMPDIR}/quicproxy.tar.gz"
 
-  log_info "正在下载 quicproxy-core-${TAG_NAME}..."
+  log_info "正在下载 quicproxy-core (${TAG_NAME})..."
   curl -fSL --connect-timeout 10 --max-time 300 -o "$tarball" "$DOWNLOAD_URL" || {
     log_error "下载失败"
     exit 1
@@ -374,7 +358,7 @@ generate_subscription_url() {
   local sni="www.apple.com"
   local tag="QuicProxy-$(hostname 2>/dev/null || echo 'Server')"
 
-  local sub_url="sq://${USERNAME}:${PASSWORD}@${host}:${port}?tag=${tag}&sni=${sni}"
+  local sub_url="sq://${USERNAME}:${PASSWORD}@${host}:${port}?tag=${tag}&sni=${sni}&zero_rtt=true&idle_timeout=500"
 
   echo ""
   echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
@@ -423,7 +407,7 @@ main() {
 
   if [[ -n "${VERSION:-}" ]]; then
     TAG_NAME="$VERSION"
-    DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/quicproxy-core-${VERSION}-linux-x64.tar.gz"
+    DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/quicproxy-core-linux-x64.tar.gz"
     log_info "使用指定版本: ${VERSION}"
   else
     detect_latest_version

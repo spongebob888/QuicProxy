@@ -40,16 +40,14 @@ jobs:
         run: cross build --release --target x86_64-unknown-linux-musl
 
       - name: Package
-        env:
-          VERSION: ${{ github.ref_name }}
         run: |
           cd target/x86_64-unknown-linux-musl/release
-          tar czf ../../../quicproxy-core-${VERSION}-linux-x64.tar.gz quicproxy
+          tar czf ../../../quicproxy-core-linux-x64.tar.gz quicproxy
 
       - uses: actions/upload-artifact@v4
         with:
-          name: quicproxy-core-${{ github.ref_name }}-linux-x64
-          path: quicproxy-core-${{ github.ref_name }}-linux-x64.tar.gz
+          name: quicproxy-core-linux-x64
+          path: quicproxy-core-linux-x64.tar.gz
 
   build-windows:
     name: Windows x64 (MSVC, static CRT)
@@ -89,12 +87,12 @@ jobs:
       - name: Package Core (Native)
         shell: pwsh
         run: |
-          Compress-Archive -Path target/x86_64-pc-windows-msvc/release/quicproxy.exe -DestinationPath quicproxy-core-${{ github.ref_name }}-windows-x64.zip
+          Compress-Archive -Path target/x86_64-pc-windows-msvc/release/quicproxy.exe -DestinationPath quicproxy-core-windows-x64.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: quicproxy-core-${{ github.ref_name }}-windows-x64
-          path: quicproxy-core-${{ github.ref_name }}-windows-x64.zip
+          name: quicproxy-core-windows-x64
+          path: quicproxy-core-windows-x64.zip
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -274,19 +272,10 @@ jobs:
           $installerInfo = Get-Item $installerPath
           Write-Host "Installer size: $([math]::Round($installerInfo.Length/1MB, 2)) MB"
 
-      - name: Rename installer with version
-        shell: pwsh
-        run: |
-          $versionedName = "QuicProxy-Windows-Setup-${{ github.ref_name }}.exe"
-          $versionedPath = Join-Path (Split-Path $env:INSTALLER_PATH -Parent) $versionedName
-          Move-Item -Path $env:INSTALLER_PATH -Destination $versionedPath -Force
-          echo "INSTALLER_PATH=$versionedPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "✓ Renamed installer to $versionedName"
-
       - name: Upload Flutter Windows Installer Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: quicproxy-flutter-${{ github.ref_name }}-windows-setup
+          name: quicproxy-flutter-windows-setup
           path: ${{ env.INSTALLER_PATH }}
           if-no-files-found: error
 
@@ -362,21 +351,20 @@ jobs:
         working-directory: ./src/premium/quicproxy_flutter
         run: flutter build apk --release
 
-      - name: Copy APK with version
+      - name: Copy APK
         run: |
           APK_PATH="src/premium/quicproxy_flutter/build/app/outputs/flutter-apk/app-release.apk"
           if [ ! -f "$APK_PATH" ]; then
             echo "APK not found at $APK_PATH"
             exit 1
           fi
-          VERSIONED_NAME="QuicProxy-Android-${{ github.ref_name }}.apk"
-          cp "$APK_PATH" "$VERSIONED_NAME"
-          echo "APK_PATH=$PWD/$VERSIONED_NAME" >> $GITHUB_ENV
-          echo "✓ Copied APK to $VERSIONED_NAME"
+          cp "$APK_PATH" "QuicProxy-Android.apk"
+          echo "APK_PATH=$PWD/QuicProxy-Android.apk" >> $GITHUB_ENV
+          echo "✓ Copied APK to QuicProxy-Android.apk"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: quicproxy-flutter-${{ github.ref_name }}-android
+          name: quicproxy-flutter-android
           path: ${{ env.APK_PATH }}
           if-no-files-found: error
 
@@ -388,76 +376,50 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: quicproxy-core-${{ github.ref_name }}-linux-x64
-          path: release-assets/linux
+          name: quicproxy-core-linux-x64
+          path: release-assets
 
       - uses: actions/download-artifact@v4
         with:
-          name: quicproxy-core-${{ github.ref_name }}-windows-x64
-          path: release-assets/windows-core
+          name: quicproxy-core-windows-x64
+          path: release-assets
 
       - uses: actions/download-artifact@v4
         with:
-          name: quicproxy-flutter-${{ github.ref_name }}-windows-setup
-          path: release-assets/windows-flutter
+          name: quicproxy-flutter-windows-setup
+          path: release-assets
 
       - uses: actions/download-artifact@v4
         with:
-          name: quicproxy-flutter-${{ github.ref_name }}-android
-          path: release-assets/android
+          name: quicproxy-flutter-android
+          path: release-assets
 
       - name: List release assets
         run: |
-          echo "Linux assets:"
-          ls -la release-assets/linux/
-          echo "Windows core assets:"
-          ls -la release-assets/windows-core/
-          echo "Windows Flutter assets:"
-          ls -la release-assets/windows-flutter/
-          echo "Android Flutter assets:"
-          ls -la release-assets/android/
+          echo "Release assets:"
+          ls -laR release-assets/
 
-      - name: Create static-named copies for direct download
-        run: |
-          mkdir -p release-assets/static
-
-          cp release-assets/windows-flutter/QuicProxy-Windows-Setup-${{ github.ref_name }}.exe \
-             release-assets/static/QuicProxy-Windows-Setup.exe
-
-          cp release-assets/android/QuicProxy-Android-${{ github.ref_name }}.apk \
-             release-assets/static/QuicProxy-Android.apk
-
-          cp release-assets/linux/quicproxy-core-${{ github.ref_name }}-linux-x64.tar.gz \
-             release-assets/static/quicproxy-core-linux-x64.tar.gz
-
-          echo "Static-named assets:"
-          ls -la release-assets/static/
-
-      - name: Publish Release with Core Labels
+      - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release-assets/linux/quicproxy-core-${{ github.ref_name }}-linux-x64.tar.gz
-            release-assets/windows-core/quicproxy-core-${{ github.ref_name }}-windows-x64.zip
-            release-assets/windows-flutter/QuicProxy-Windows-Setup-${{ github.ref_name }}.exe
-            release-assets/android/QuicProxy-Android-${{ github.ref_name }}.apk
-            release-assets/static/QuicProxy-Windows-Setup.exe
-            release-assets/static/QuicProxy-Android.apk
-            release-assets/static/quicproxy-core-linux-x64.tar.gz
+            release-assets/quicproxy-core-linux-x64.tar.gz
+            release-assets/quicproxy-core-windows-x64.zip
+            release-assets/QuicProxy-Windows-Setup.exe
+            release-assets/QuicProxy-Android.apk
           generate_release_notes: true
-          name: QuicProxy ${{ github.ref_name }} - Core Release
+          name: QuicProxy ${{ github.ref_name }}
           body: |
             ## QuicProxy ${{ github.ref_name }}
 
-            ### Core Binaries
-            - **Linux x64**: `quicproxy-core-${{ github.ref_name }}-linux-x64.tar.gz`
-            - **Windows x64**: `quicproxy-core-${{ github.ref_name }}-windows-x64.zip`
+            ### 下载
+            | 平台 | 文件 |
+            |---|---|
+            | 🖥️ Windows | `QuicProxy-Windows-Setup.exe` |
+            | 📱 Android | `QuicProxy-Android.apk` |
+            | 🐧 Linux x64 | `quicproxy-core-linux-x64.tar.gz` |
+            | 🪟 Windows x64 (Core) | `quicproxy-core-windows-x64.zip` |
 
-            ### Windows Application
-            - **Flutter Installer**: `QuicProxy-Windows-Setup-${{ github.ref_name }}.exe`
-
-            ### Android Application
-            - **Flutter APK**: `QuicProxy-Android-${{ github.ref_name }}.apk`
-
-            ### Core Version
-            This release includes core version `${{ github.ref_name }}`
+            > 💡 直接下载链接始终指向最新版:
+            > - https://github.com/RealBikiniBottom/QuicProxy/releases/latest/download/QuicProxy-Windows-Setup.exe
+            > - https://github.com/RealBikiniBottom/QuicProxy/releases/latest/download/QuicProxy-Android.apk

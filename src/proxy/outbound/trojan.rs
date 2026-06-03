@@ -23,8 +23,7 @@ use bytes::Bytes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub struct TrojanOutbound {
-    pub address: String,
-    pub port: u16,
+    pub address: TargetAddr,
     pub password: String,
     pub tls: QuicTlsConfig,
     pub congestion_controller: Option<String>,
@@ -47,6 +46,7 @@ impl TrojanOutbound {
             "shadowquic outbound '{}' requires port",
             tag.clone()
         ))?;
+        let address = TargetAddr::from_str2(&address, port)?;
 
         let password = cfg
             .password
@@ -64,7 +64,6 @@ impl TrojanOutbound {
 
         let trojan = Self {
             address,
-            port,
             password,
             tls,
             congestion_controller: cfg.congestion_controller.clone(),
@@ -103,7 +102,8 @@ impl TrojanOutbound {
     }
 
     fn tls_server_name(&self) -> Result<rustls::pki_types::ServerName<'static>> {
-        let name = self.tls.sni.as_deref().unwrap_or(self.address.as_str());
+        let host = self.address.host();
+        let name = self.tls.sni.as_deref().unwrap_or(&host);
         Ok(rustls::pki_types::ServerName::try_from(name)
             .map_err(|e| new_io_other_error(e))?
             .to_owned())
@@ -247,7 +247,7 @@ impl AnyOutbound for TrojanOutbound {
     }
 
     async fn connect_stream_base(&self) -> anyhow::Result<AnyStream> {
-        let socket_addr = self.resolve_addr(&self.address, self.port).await?;
+        let socket_addr = self.resolve_addr(&self.address).await?;
         let stream = self.new_tcp_stream(socket_addr).await?;
 
         if self.tls.enable {

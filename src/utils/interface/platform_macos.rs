@@ -5,11 +5,15 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::Command;
 
+#[allow(dead_code)]
 pub(super) struct ListContext {
+    #[allow(dead_code)]
     friendly_names: HashMap<String, String>,
+    #[allow(dead_code)]
     default_route: Option<(String, String)>,
 }
 
+#[allow(dead_code)]
 impl ListContext {
     pub(super) fn new() -> Self {
         Self {
@@ -19,6 +23,7 @@ impl ListContext {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn enhance_interface(
     ctx: &ListContext,
     iface_name: &str,
@@ -129,6 +134,7 @@ fn get_macos_friendly_names() -> HashMap<String, String> {
     map
 }
 
+#[allow(dead_code)]
 fn get_macos_default_route() -> Option<(String, String)> {
     let output = Command::new("route")
         .arg("-n")

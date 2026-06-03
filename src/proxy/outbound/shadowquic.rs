@@ -26,8 +26,7 @@ use super::AnyPacket;
 
 pub struct ShadowQuicOutbound {
     tag: String,
-    address: String,
-    port: u16,
+    address: TargetAddr,
 
     auth_hash: Option<[u8; 64]>,
     tls: QuicTlsConfig,
@@ -89,6 +88,7 @@ impl ShadowQuicOutbound {
             "shadowquic outbound '{}' requires port",
             tag.clone()
         ))?;
+        let address = TargetAddr::from_str2(&address, port)?;
 
         let cached_client = Arc::new(Mutex::new(None));
         if let Some(mut rx) = InterfaceManager::subscribe() {
@@ -105,7 +105,6 @@ impl ShadowQuicOutbound {
         Ok(Arc::new(Self {
             tag,
             address,
-            port,
             tls,
             connect_timeout,
             idle_timeout,
@@ -145,7 +144,7 @@ impl ShadowQuicOutbound {
             }
         }
 
-        let remote_addr = self.resolve_addr(&self.address, self.port).await?;
+        let remote_addr = self.resolve_addr(&self.address).await?;
 
         let socket = self.new_udp_socket(remote_addr).await?;
 

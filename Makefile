@@ -69,16 +69,19 @@ build-android:
 
 build-ios:
 	rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+	RUSTFLAGS="-C link-arg=-Wl,-undefined,dynamic_lookup" \
 	cargo build --release --target aarch64-apple-ios --features "premium" --lib
+	RUSTFLAGS="-C link-arg=-Wl,-undefined,dynamic_lookup" \
 	cargo build --release --target aarch64-apple-ios-sim --features "premium" --lib
+	RUSTFLAGS="-C link-arg=-Wl,-undefined,dynamic_lookup" \
 	cargo build --release --target x86_64-apple-ios --features "premium" --lib
 	mkdir -p target/ios-simulator-fat
 	lipo -create \
 		target/aarch64-apple-ios-sim/release/libquicproxy.a \
 		target/x86_64-apple-ios/release/libquicproxy.a \
 		-output target/ios-simulator-fat/libquicproxy.a
-	rm -rf src/premium/quicproxy_flutter/ios/QuicProxyTunnel/QuicProxyCore.xcframework
+	rm -rf src/premium/quicproxy_flutter/ios/tunnel/QuicProxyCore.xcframework
 	xcodebuild -create-xcframework \
 		-library target/aarch64-apple-ios/release/libquicproxy.a \
 		-library target/ios-simulator-fat/libquicproxy.a \
-		-output src/premium/quicproxy_flutter/ios/QuicProxyTunnel/QuicProxyCore.xcframework
+		-output src/premium/quicproxy_flutter/ios/tunnel/QuicProxyCore.xcframework

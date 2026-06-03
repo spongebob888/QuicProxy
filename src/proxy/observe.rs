@@ -71,7 +71,8 @@ impl ConnectionTracker {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DstTrafficEntry {
-    pub dst: String,
+    pub domain: String,
+    pub ip: String,
     pub outbound_tag: String,
     pub upload: u64,
     pub download: u64,
@@ -276,25 +277,24 @@ impl Observer {
             let upload = conn.upload.load(Ordering::Relaxed);
             let download = conn.download.load(Ordering::Relaxed);
             if upload > 0 || download > 0 {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
+                let now = now_timestamp();
 
-                let dst_key = match &conn.final_target {
+                let mut ip = "".to_string();
+                let domain = match &conn.final_target {
                     TargetAddr::Ip(addr) => {
                         let ip_str = addr.ip().to_string();
+                        ip = ip_str.to_string();
                         self.realip2domain
                             .iter()
                             .find(|r| r.value() == &ip_str)
-                            .map(|r| format!("{}:{}", r.key(), addr.port()))
+                            .map(|_| ip_str)
                             .unwrap_or_else(|| conn.final_target.to_string())
                     }
                     TargetAddr::Domain(..) => conn.final_target.to_string(),
                 };
 
                 self.dst_traffic
-                    .entry(dst_key.clone())
+                    .entry(domain.to_string())
                     .and_modify(|e| {
                         e.upload = e.upload.wrapping_add(upload);
                         e.download = e.download.wrapping_add(download);
@@ -304,7 +304,8 @@ impl Observer {
                         }
                     })
                     .or_insert(DstTrafficEntry {
-                        dst: dst_key,
+                        domain: domain,
+                        ip: ip,
                         outbound_tag: conn.outbound_tag.clone(),
                         upload,
                         download,
@@ -347,12 +348,8 @@ impl Observer {
         self.connections.iter().map(|r| r.value().clone()).collect()
     }
 
-    pub fn get_dst_traffic(&self) -> Vec<DstTrafficEntry> {
-        self.dst_traffic.iter().map(|r| r.value().clone()).collect()
-    }
-
     pub fn drain_dst_traffic(&self) -> Vec<DstTrafficEntry> {
-        let entries = self.get_dst_traffic();
+        let entries = self.dst_traffic.iter().map(|r| r.value().clone()).collect();
         self.dst_traffic.clear();
         entries
     }

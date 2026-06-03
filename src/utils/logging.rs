@@ -4,6 +4,89 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*, reload};
 
+#[cfg(target_os = "ios")]
+mod nslog_writer {
+    use std::ffi::CString;
+    use std::io::{self, Write};
+    use std::sync::Mutex;
+
+    static LINE_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+    pub struct NsLogMakeWriter;
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for NsLogMakeWriter {
+        type Writer = NsLogWriter<'a>;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            NsLogWriter {
+                _lifetime: std::marker::PhantomData,
+            }
+        }
+    }
+
+    pub struct NsLogWriter<'a> {
+        _lifetime: std::marker::PhantomData<&'a ()>,
+    }
+
+    impl Write for NsLogWriter<'_> {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let mut line_buf = LINE_BUF.lock().unwrap();
+            line_buf.extend_from_slice(buf);
+
+            while let Some(nl_pos) = line_buf.iter().position(|&b| b == b'\n') {
+                let line = &line_buf[..nl_pos];
+                emit_nslog(line);
+                line_buf.drain(..=nl_pos);
+            }
+
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            let mut line_buf = LINE_BUF.lock().unwrap();
+            if !line_buf.is_empty() {
+                emit_nslog(&line_buf);
+                line_buf.clear();
+            }
+            Ok(())
+        }
+    }
+
+    fn emit_nslog(data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        let msg = String::from_utf8_lossy(data);
+        let msg = msg.trim_end();
+        if msg.is_empty() {
+            return;
+        }
+
+        let level = if msg.starts_with("ERROR") {
+            "error"
+        } else if msg.starts_with("WARN") || msg.starts_with(" WARN") {
+            "warn"
+        } else if msg.starts_with("INFO") || msg.starts_with(" INFO") {
+            "info"
+        } else {
+            "debug"
+        };
+
+        let Ok(c_level) = CString::new(level) else {
+            return;
+        };
+        let Ok(c_msg) = CString::new(msg.as_bytes()) else {
+            return;
+        };
+        unsafe {
+            unsafe extern "C" {
+                fn ios_rust_log(level: *const std::ffi::c_char, message: *const std::ffi::c_char);
+            }
+            ios_rust_log(c_level.as_ptr(), c_msg.as_ptr());
+        }
+    }
+}
+
 struct SizeLimitedFileAppender {
     path: PathBuf,
     max_size: u64,
@@ -69,17 +152,27 @@ pub fn init_logging(
     tracing_subscriber::reload::Handle<EnvFilter, tracing_subscriber::Registry>,
     Option<tracing_appender::non_blocking::WorkerGuard>,
 ) {
-    let (log_level, log_path, log_color, log_stdout, log_max_size, backtrace_mode) = match log_config {
-        LogConfig::Level(l) => (l.as_str(), None, true, true, None, &crate::config::BacktraceMode::On),
+    let (log_enabled, log_level, log_path, log_color, log_stdout, log_max_size, backtrace_mode) = match log_config {
+        LogConfig::Level(l) => (true, l.as_str(), None, true, true, None, &crate::config::BacktraceMode::On),
         LogConfig::Detailed {
+            enable,
             level,
             path,
             color,
             stdout,
             max_size,
             backtrace,
-        } => (level.as_str(), path.as_deref(), *color, *stdout, *max_size, backtrace),
+        } => (*enable, level.as_str(), path.as_deref(), *color, *stdout, *max_size, backtrace),
     };
+
+    if !log_enabled {
+        let (filter, reload_handle) = reload::Layer::new(EnvFilter::new("off"));
+        tracing_subscriber::registry()
+            .with(filter)
+            .try_init()
+            .ok();
+        return (reload_handle, None);
+    }
 
     unsafe {
         std::env::set_var("RUST_BACKTRACE", backtrace_mode.as_env_value());
@@ -132,15 +225,20 @@ pub fn init_logging(
     };
 
     let fmt_layer_stdout = if log_stdout {
-        Some(
-            fmt::layer()
-                .with_ansi(log_color)
-                .with_file(true)
-                .with_line_number(true)
-                .with_target(false)
-                .with_writer(std::io::stdout)
-                .without_time(),
-        )
+        let layer = fmt::layer()
+            .with_ansi(log_color)
+            .with_file(true)
+            .with_line_number(true)
+            .with_target(false)
+            .without_time();
+
+        #[cfg(target_os = "ios")]
+        let layer = layer.with_ansi(false).with_writer(nslog_writer::NsLogMakeWriter);
+
+        #[cfg(not(target_os = "ios"))]
+        let layer = layer.with_writer(std::io::stdout);
+
+        Some(layer)
     } else {
         None
     };

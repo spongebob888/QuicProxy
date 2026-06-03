@@ -88,7 +88,9 @@ pub async fn resolve_domain(domain: &str, dns_server: Arc<dyn AnyDNS>) -> Result
 
     if let Some(observer) = get_observer() {
         observer.record_dns_time(now.elapsed().as_micros() as u64);
-        observer.realip2domain.insert(domain.to_string(), ip.to_string());
+        observer
+            .realip2domain
+            .insert(domain.to_string(), ip.to_string());
     }
 
     Ok(ip)
@@ -423,18 +425,8 @@ pub trait AnyDNS: Send + Sync + 'static {
         apply_ttl_to_response(&response_bytes, self.min_ttl(), self.max_ttl())
     }
 
-    async fn resolve_dns_server(dns_server: &str, port: u16) -> Result<SocketAddr>
-    where
-        Self: Sized,
-    {
-        if let Ok(ip) = dns_server.parse::<IpAddr>() {
-            Ok(SocketAddr::new(ip, port))
-        } else {
-            let mut addrs = tokio::net::lookup_host((dns_server, port)).await?;
-            addrs
-                .next()
-                .ok_or_else(|| anyhow!("Failed to resolve DNS server address"))
-        }
+    fn dns_server(&self) -> Option<&str> {
+        None
     }
 
     async fn exchange(&self, packet_bytes: &[u8]) -> Result<Vec<u8>>;
@@ -480,8 +472,7 @@ pub trait AnyDNS: Send + Sync + 'static {
 
 pub struct UdpDns {
     pub tag: String,
-    pub address: String,
-    pub port: u16,
+    pub address: TargetAddr,
     pub min_ttl: Option<Duration>,
     pub max_ttl: Option<Duration>,
     pub outbound: Arc<dyn AnyOutbound>,
@@ -496,6 +487,7 @@ impl UdpDns {
             .clone()
             .ok_or_else(|| anyhow!("dns '{}' requires address", tag))?;
         let port = cfg.port.unwrap_or(53);
+        let address = TargetAddr::from_str2(&address, port)?;
 
         let min_ttl = cfg.min_ttl.map(Duration::from_secs);
         let max_ttl = cfg.max_ttl.map(Duration::from_secs);
@@ -519,7 +511,6 @@ impl UdpDns {
         Ok(Arc::new(Self {
             tag,
             address,
-            port,
             min_ttl,
             max_ttl,
             outbound,
@@ -544,8 +535,8 @@ impl AnyDNS for UdpDns {
     }
 
     async fn exchange(&self, packet_bytes: &[u8]) -> Result<Vec<u8>> {
-        let server_addr = Self::resolve_dns_server(&self.address, self.port).await?;
-        let target = TargetAddr::Ip(server_addr);
+        let target = resolve_target(&self.address, self.dns_server()).await?;
+        let target = TargetAddr::Ip(target);
         let socket = self.outbound.connect_packet(&target).await?;
 
         let buf = bytes::Bytes::copy_from_slice(packet_bytes);
@@ -578,6 +569,7 @@ pub struct HttpsDns {
     pub outbound: Arc<dyn AnyOutbound>,
     pub cache: DnsCache,
     url: String,
+    dns_server_name: Option<String>,
     pub reject_ipv6: bool,
 }
 
@@ -614,6 +606,7 @@ impl HttpsDns {
             min_ttl,
             max_ttl,
             outbound,
+            dns_server_name: cfg.dns.clone(),
             cache,
             url,
             reject_ipv6,
@@ -635,12 +628,17 @@ impl AnyDNS for HttpsDns {
         self.reject_ipv6
     }
 
+    fn dns_server(&self) -> Option<&str> {
+        self.dns_server_name.as_deref()
+    }
+
     async fn exchange(&self, packet_bytes: &[u8]) -> Result<Vec<u8>> {
         let mut headers = HeaderMap::new();
         headers.insert("Content-Type", "application/dns-message".parse().unwrap());
 
         let response = http_outbound::request_post_via_outbound(
             self.outbound.clone(),
+            self.dns_server(),
             &self.url,
             self.outbound.connect_timeout(),
             Some(&headers),

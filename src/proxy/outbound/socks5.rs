@@ -15,8 +15,7 @@ use std::time::Duration;
 
 pub struct Socks5Outbound {
     tag: String,
-    address: String,
-    port: u16,
+    address: TargetAddr,
     username: Option<String>,
     password: Option<String>,
     connect_timeout: Duration,
@@ -34,11 +33,11 @@ impl Socks5Outbound {
             "shadowquic outbound '{}' requires port",
             tag.clone()
         ))?;
+        let address = TargetAddr::from_str2(&address, port)?;
 
         Ok(Arc::new(Self {
             tag,
             address,
-            port,
             username: cfg.username.clone(),
             password: cfg.password.clone(),
             connect_timeout: Duration::from_secs(cfg.connect_timeout.unwrap_or(30)),
@@ -71,7 +70,7 @@ impl AnyOutbound for Socks5Outbound {
     }
 
     async fn connect_stream_base(&self) -> anyhow::Result<AnyStream> {
-        let proxy_addr = self.resolve_addr(&self.address, self.port).await?;
+        let proxy_addr = self.resolve_addr(&self.address).await?;
 
         let stream = self.new_tcp_stream(proxy_addr).await?;
         Ok(Box::new(stream))
@@ -177,7 +176,7 @@ impl AnyOutbound for Socks5Outbound {
     }
 
     async fn connect_packet(&self, target: &TargetAddr) -> anyhow::Result<Arc<dyn AnyPacket>> {
-        let proxy_addr = self.resolve_addr(&self.address, self.port).await?;
+        let proxy_addr = self.resolve_addr(&self.address).await?;
         let mut stream = self.new_tcp_stream(proxy_addr).await?;
 
         // Wrap UDP ASSOCIATE handshake in connect timeout

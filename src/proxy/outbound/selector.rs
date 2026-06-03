@@ -206,7 +206,7 @@ impl SelectorOutbound {
                     }
                     Err(err) => {
                         debug!(
-                            "{} [{}] outbound [{}] trace failed: {}",
+                            "{} [{}] outbound [{}] trace failed: {:#}",
                             self.protocol(),
                             self.tag,
                             tag,

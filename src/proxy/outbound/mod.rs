@@ -30,7 +30,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use trojan::TrojanOutbound;
 
 use crate::config::Config;
-use crate::dns::resolve_str;
+use crate::dns::resolve_target;
 use crate::proxy::observe::get_observer;
 use crate::proxy::{SessionCloser, TargetAddr};
 use crate::utils::interface::{InterfaceInfo, InterfaceManager, resolve_iface};
@@ -356,8 +356,8 @@ pub trait AnyOutbound: Send + Sync {
         Ok(None)
     }
 
-    async fn resolve_addr(&self, address: &str, port: u16) -> anyhow::Result<SocketAddr> {
-        resolve_str(address, port, self.dns_server_name()).await
+    async fn resolve_addr(&self, address: &TargetAddr) -> anyhow::Result<SocketAddr> {
+        resolve_target(address, self.dns_server_name()).await
     }
 
     async fn new_tcp_stream(&self, connect_to: SocketAddr) -> io::Result<TcpStream> {

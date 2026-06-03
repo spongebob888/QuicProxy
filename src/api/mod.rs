@@ -283,15 +283,6 @@ struct ConnectionData {
 }
 
 #[derive(Serialize)]
-struct TrafficData {
-    dst: String,
-    outbound_tag: String,
-    upload: u64,
-    download: u64,
-    last_active: u64,
-}
-
-#[derive(Serialize)]
 struct ObserveResponse {
     inbounds: HashMap<String, StatsData>,
     outbounds: HashMap<String, StatsData>,
@@ -542,16 +533,5 @@ async fn get_traffic(
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&headers, &state.password)?;
 
-    let entries = state.observer.drain_dst_traffic();
-    let data: Vec<TrafficData> = entries
-        .into_iter()
-        .map(|e| TrafficData {
-            dst: e.dst,
-            outbound_tag: e.outbound_tag,
-            upload: e.upload,
-            download: e.download,
-            last_active: e.last_active,
-        })
-        .collect();
-    Ok(Json(data))
+    Ok(Json(state.observer.drain_dst_traffic()))
 }

@@ -14,6 +14,7 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls;
 use tracing::debug;
 
+use crate::dns::resolve_str;
 use crate::proxy::TargetAddr;
 use crate::proxy::outbound::{AnyOutbound, AnyStream};
 
@@ -49,6 +50,7 @@ async fn maybe_wrap_tls(
 
 async fn request_once_with_body(
     outbound: Arc<dyn AnyOutbound>,
+    dns: Option<&str>,
     method: Method,
     url: reqwest::Url,
     user_agent: Option<&str>,
@@ -56,14 +58,12 @@ async fn request_once_with_body(
     body: Bytes,
 ) -> anyhow::Result<(OutboundHttpResponse, reqwest::Url)> {
     debug!("sending http request to {} via {}", url, outbound.tag());
-    let host = url
-        .host_str()
-        .context("URL missing host")?;
+    let host = url.host_str().context("URL missing host")?;
     let port = url
         .port_or_known_default()
         .context("URL missing known port")?;
 
-    let target = TargetAddr::Domain(host.to_string(), port);
+    let target = TargetAddr::Ip(resolve_str(host, port, dns).await?);
     let stream = outbound.connect_stream(&target).await?;
     let stream = maybe_wrap_tls(&url, host, stream).await?;
 
@@ -130,7 +130,16 @@ async fn request_once(
     user_agent: Option<&str>,
     headers: Option<&HeaderMap>,
 ) -> anyhow::Result<(OutboundHttpResponse, reqwest::Url)> {
-    request_once_with_body(outbound, method, url, user_agent, headers, Bytes::new()).await
+    request_once_with_body(
+        outbound.clone(),
+        outbound.dns_server_name(),
+        method,
+        url,
+        user_agent,
+        headers,
+        Bytes::new(),
+    )
+    .await
 }
 
 async fn collect_body(response: Response<Incoming>) -> anyhow::Result<Bytes> {
@@ -181,10 +190,7 @@ pub async fn request_via_outbound(
                 .get(LOCATION)
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "HTTP redirect without valid Location: {}",
-                        base_url
-                    )
+                    anyhow::anyhow!("HTTP redirect without valid Location: {}", base_url)
                 })?;
 
             let redirect_url = base_url.join(location).context("Invalid redirect URL")?;
@@ -237,10 +243,7 @@ pub async fn request_via_outbound_with_ua(
                 .get(LOCATION)
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "HTTP redirect without valid Location: {}",
-                        base_url
-                    )
+                    anyhow::anyhow!("HTTP redirect without valid Location: {}", base_url)
                 })?;
 
             let redirect_url = base_url.join(location).context("Invalid redirect URL")?;
@@ -255,6 +258,7 @@ pub async fn request_via_outbound_with_ua(
 
 pub async fn request_post_via_outbound(
     outbound: Arc<dyn AnyOutbound>,
+    dns: Option<&str>,
     url: &str,
     timeout: Duration,
     headers: Option<&HeaderMap>,
@@ -263,9 +267,16 @@ pub async fn request_post_via_outbound(
     tokio::time::timeout(timeout, async move {
         let current = reqwest::Url::parse(url).context("Invalid URL")?;
         // DoH POST请求不需要跟随重定向，直接发起一次请求即可
-        let (response, _) =
-            request_once_with_body(outbound.clone(), Method::POST, current, None, headers, body)
-                .await?;
+        let (response, _) = request_once_with_body(
+            outbound.clone(),
+            dns,
+            Method::POST,
+            current,
+            None,
+            headers,
+            body,
+        )
+        .await?;
 
         if response.status.is_redirection() {
             return Err(anyhow::anyhow!(

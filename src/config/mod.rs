@@ -47,6 +47,8 @@ pub struct ApiConfig {
 pub enum LogConfig {
     Level(String),
     Detailed {
+        #[serde(default = "default_true")]
+        enable: bool,
         level: String,
         path: Option<String>,
         #[serde(default = "default_true")]
@@ -216,6 +218,7 @@ pub struct DnsServerConfig {
     pub max_ttl: Option<u64>,
     pub outbound: Option<String>,
     pub cache: Option<String>,
+    pub dns: Option<String>,
     pub range: Option<Vec<String>>,
     #[serde(default)]
     pub reject_ipv6: bool,

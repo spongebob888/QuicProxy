@@ -4,14 +4,17 @@ use std::io;
 use std::net::IpAddr;
 use std::process::Command;
 
+#[allow(dead_code)]
 pub(super) struct ListContext;
 
+#[allow(dead_code)]
 impl ListContext {
     pub(super) fn new() -> Self {
         Self
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn enhance_interface(
     _ctx: &ListContext,
     _iface_name: &str,

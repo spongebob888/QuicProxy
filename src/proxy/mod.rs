@@ -148,6 +148,10 @@ impl TargetAddr {
         // Allow permissive charset to support IDN, internal hostnames, etc.
         Ok(TargetAddr::Domain(host.to_string(), port))
     }
+
+    pub fn from_str2(domain: &str, port: u16) -> anyhow::Result<Self> {
+        TargetAddr::from_str(format!("{}:{}", domain, port).as_ref())
+    }
 }
 
 impl fmt::Display for TargetAddr {

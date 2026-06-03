@@ -283,7 +283,7 @@ impl Observer {
                 let domain = match &conn.final_target {
                     TargetAddr::Ip(addr) => {
                         let ip_str = addr.ip().to_string();
-                        ip = ip_str.to_string();
+                        ip = addr.to_string();
                         self.realip2domain
                             .iter()
                             .find(|r| r.value() == &ip_str)

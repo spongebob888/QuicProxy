@@ -153,6 +153,10 @@ impl SelectorOutbound {
             "{} [{}] started latency test loop with interval {:?}",
             mode, self.tag, self.interval
         );
+        // Give other components (DNS, etc.) time to initialize before the first check.
+        // init_dns runs after init_outbounds in the bootstrap sequence,
+        // and the spawned test loop may execute before DNS is ready.
+        tokio::time::sleep(Duration::from_secs(3)).await;
         loop {
             self.check_all().await;
             tokio::time::sleep(self.interval).await;

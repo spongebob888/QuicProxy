@@ -287,8 +287,8 @@ impl Observer {
                         self.realip2domain
                             .iter()
                             .find(|r| r.value() == &ip_str)
-                            .map(|_| ip_str)
-                            .unwrap_or_else(|| conn.final_target.to_string())
+                            .map(|r| format!("{}:{}", r.key().clone(), addr.port()))
+                            .unwrap_or_else(|| "".to_string())
                     }
                     TargetAddr::Domain(..) => conn.final_target.to_string(),
                 };

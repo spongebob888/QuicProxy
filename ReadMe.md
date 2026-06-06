@@ -41,6 +41,17 @@ curl -fsSL https://raw.githubusercontent.com/RealBikiniBottom/QuicProxy/master/l
 
 ## 支持的协议
 
+入站：
+
+- Socks5
+- HTTP
+- Tun
+- Shadowquic
+- AnyTLS
+- Trojan
+
+出站：
+
 - Shadowquic （推荐）
 - Socks5
 - AnyTLS

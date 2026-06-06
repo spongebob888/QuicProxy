@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::proxy::outbound::{OUTBOUNDS_MAP, get_outbound_by_tag};
 use crate::proxy::{
@@ -38,7 +38,10 @@ pub struct ApiState {
 pub async fn init_api(cfg: &Config) -> Result<Option<tokio::sync::mpsc::Receiver<()>>> {
     let api = match &cfg.api {
         Some(r) => r.clone(),
-        None => return Ok(None),
+        None => {
+            debug!("init_api");
+            return Ok(None);
+        }
     };
 
     let addr_str = format!("{}:{}", api.address, api.port);
@@ -81,6 +84,7 @@ pub async fn init_api(cfg: &Config) -> Result<Option<tokio::sync::mpsc::Receiver
         }
         info!("API server exited");
     });
+    debug!("init_api");
     Ok(Some(shutdown_rx))
 }
 

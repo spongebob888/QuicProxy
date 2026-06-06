@@ -12,7 +12,7 @@ use crate::utils::shutdown;
 use crate::{api::init_api, dns::init_dns};
 use anyhow::{Context, Result};
 use std::future::Future;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 pub async fn run_with_signal<F>(config: Config, signal: F) -> Result<()>
 where
@@ -65,22 +65,30 @@ where
 
 pub async fn init_app(mut config: Config) -> Result<Option<tokio::sync::mpsc::Receiver<()>>> {
     init_cache(&config).context("Failed to init cache")?;
+    debug!("init_cache");
 
     init_observer(&config).context("Failed to init observer")?;
+    debug!("init_observer");
 
     init_outbounds(&config).context("Failed to init outbounds")?;
+    debug!("init_outbounds");
 
     init_dns(&config).context("Failed to init dns")?;
+    debug!("init_dns");
 
     init_geoip_db(&config)
         .await
         .context("Failed to init geoip db")?;
+    debug!("init_geoip_db");
 
     init_geoip(&config).await.context("Failed to init geoip")?;
+    debug!("init_geoip");
 
     init_router(&config).context("Failed to init router")?;
+    debug!("init_router");
 
     init_inbounds(&config).context("Failed to init inbounds")?;
+    debug!("init_inbounds");
 
     init_api(&mut config).await.context("Failed to init API")
 }

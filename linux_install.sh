@@ -187,6 +187,60 @@ generate_credentials() {
   log_info "已生成随机密码: ${PASSWORD}"
 }
 
+prompt_install_options() {
+  log_step "选择要安装的入站协议"
+
+  local choose_anytls="${INSTALL_ANYTLS:-yes}"
+  local choose_shadowquic="${INSTALL_SHADOWQUIC:-yes}"
+
+  if [[ -t 0 ]]; then
+    echo ""
+    echo -e "  ${GREEN}QuicProxy 支持两种入站协议:${NC}"
+    echo ""
+    echo -e "  ${CYAN}1) anytls (TCP + JLS)${NC}  — 基于 TLS 的伪装隧道，兼容性好"
+    echo -e "  ${CYAN}2) shadowquic (QUIC + JLS)${NC} — 基于 QUIC 的伪装隧道，延迟更低"
+    echo ""
+
+    echo -ne "  ${YELLOW}安装 anytls (TCP + JLS)? [Y/n]: ${NC}"
+    read -r input
+    if [[ -n "$input" ]]; then
+      input=$(echo "$input" | tr '[:upper:]' '[:lower:]')
+      case "$input" in
+        n|no|0|false) choose_anytls="no" ;;
+        *)            choose_anytls="yes" ;;
+      esac
+    fi
+
+    echo -ne "  ${YELLOW}安装 shadowquic (QUIC + JLS)? [Y/n]: ${NC}"
+    read -r input
+    if [[ -n "$input" ]]; then
+      input=$(echo "$input" | tr '[:upper:]' '[:lower:]')
+      case "$input" in
+        n|no|0|false) choose_shadowquic="no" ;;
+        *)            choose_shadowquic="yes" ;;
+      esac
+    fi
+
+    echo ""
+  fi
+
+  if [[ "$choose_anytls" == "no" ]] && [[ "$choose_shadowquic" == "no" ]]; then
+    log_error "至少需要选择一种协议"
+    exit 1
+  fi
+
+  ENABLE_ANYTLS="$choose_anytls"
+  ENABLE_SHADOWQUIC="$choose_shadowquic"
+
+  if [[ "$choose_anytls" == "yes" ]] && [[ "$choose_shadowquic" == "yes" ]]; then
+    log_info "已选择: anytls + shadowquic (双协议)"
+  elif [[ "$choose_anytls" == "yes" ]]; then
+    log_info "已选择: anytls"
+  else
+    log_info "已选择: shadowquic"
+  fi
+}
+
 detect_available_port() {
   log_step "检测可用端口..."
 
@@ -209,21 +263,43 @@ detect_available_port() {
     return 0
   }
 
-  if check_udp_port_free "$preferred"; then
+  check_tcp_port_free() {
+    local port=$1
+    if command -v ss &>/dev/null; then
+      ss -tln 2>/dev/null | grep -q ":${port} " && return 1 || return 0
+    elif command -v netstat &>/dev/null; then
+      netstat -tln 2>/dev/null | grep -q ":${port} " && return 1 || return 0
+    fi
+    return 0
+  }
+
+  port_is_ok() {
+    local port=$1
+    local ok=true
+    if [[ "${ENABLE_SHADOWQUIC:-}" == "yes" ]]; then
+      check_udp_port_free "$port" || ok=false
+    fi
+    if [[ "${ENABLE_ANYTLS:-}" == "yes" ]]; then
+      check_tcp_port_free "$port" || ok=false
+    fi
+    [[ "$ok" == true ]]
+  }
+
+  if port_is_ok "$preferred"; then
     SHADOWQUIC_PORT="$preferred"
-    log_info "UDP ${preferred} 端口可用, 优先使用"
+    log_info "端口 ${preferred} 可用, 优先使用"
     return
   fi
 
-  log_warn "UDP ${preferred} 端口已被占用"
+  log_warn "端口 ${preferred} 已被占用"
 
   for port in "${fallback_ports[@]}"; do
-    if check_udp_port_free "$port"; then
+    if port_is_ok "$port"; then
       SHADOWQUIC_PORT="$port"
-      log_info "使用备用端口: UDP ${port}"
+      log_info "使用备用端口: ${port}"
       return
     fi
-    log_warn "UDP ${port} 端口已被占用"
+    log_warn "端口 ${port} 已被占用"
   done
 
   log_error "所有候选端口均被占用, 请手动指定: PORT=12345 sudo bash linux_install.sh"
@@ -297,13 +373,26 @@ write_server_config() {
   local sni="www.apple.com"
   local idle_timeout=500
 
+  local anytls_enabled=false
+  local sq_enabled=false
+  [[ "${ENABLE_ANYTLS:-yes}" == "yes" ]] && anytls_enabled=true
+  [[ "${ENABLE_SHADOWQUIC:-yes}" == "yes" ]] && sq_enabled=true
+
+  local port="${SHADOWQUIC_PORT}"
+
   cat > "$CONFIG_PATH" << JSON5EOF
 {
   "inbounds": {
+JSON5EOF
+
+  if $sq_enabled; then
+    local trailing_comma=""
+    $anytls_enabled && trailing_comma=","
+    cat >> "$CONFIG_PATH" << JSON5EOF
     "shadowquic_inbound": {
       "type": "shadowquic",
       "address": "0.0.0.0",
-      "port": ${SHADOWQUIC_PORT},
+      "port": ${port},
       "idle_timeout": ${idle_timeout},
       "gso": true,
       "tls": {
@@ -313,13 +402,36 @@ write_server_config() {
         "zero_rtt": true,
         "sni": "${sni}"
       }
+    }${trailing_comma}
+JSON5EOF
+  fi
+
+  if $anytls_enabled; then
+    cat >> "$CONFIG_PATH" << JSON5EOF
+    "anytls_inbound": {
+      "type": "anytls",
+      "address": "0.0.0.0",
+      "port": ${port},
+      "password": "${PASSWORD}",
+      "idle_timeout": ${idle_timeout},
+      "tls": {
+        "enable": true,
+        "enable_jls": true,
+        "jls_username": "${USERNAME}",
+        "jls_password": "${PASSWORD}",
+        "sni": "${sni}"
+      }
     }
+JSON5EOF
+  fi
+
+  cat >> "$CONFIG_PATH" << JSON5EOF
   },
   "outbounds": {
     "default_server": "direct",
     "servers": {
       "direct": {
-        "type": "direct",
+        "type": "direct"
       }
     }
   },
@@ -367,6 +479,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
+ExecStartPre=/bin/sh -c 'echo "[quicproxy] 机器重启，订阅链接存放于 ${INSTALL_DIR}/subscription.txt" | systemd-cat -t quicproxy'
 ExecStart=${BIN_PATH} -c ${CONFIG_PATH}
 Restart=on-failure
 RestartSec=5
@@ -401,30 +514,54 @@ generate_subscription_url() {
   local encoded_tag
   encoded_tag=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${tag}', safe=''))" 2>/dev/null || echo "${tag}")
 
-  local sub_url="sq://${USERNAME}:${PASSWORD}@${host}:${port}?sni=${sni}&zero_rtt=true&idle_timeout=500#${encoded_tag}"
+  local anytls_enabled=false
+  local sq_enabled=false
+  [[ "${ENABLE_ANYTLS:-yes}" == "yes" ]] && anytls_enabled=true
+  [[ "${ENABLE_SHADOWQUIC:-yes}" == "yes" ]] && sq_enabled=true
 
+  local sq_url=""
+  local anytls_url=""
+
+  if $sq_enabled; then
+    sq_url="sq://${USERNAME}:${PASSWORD}@${host}:${port}?sni=${sni}&zero_rtt=true&idle_timeout=500#${encoded_tag}"
+  fi
+
+  if $anytls_enabled; then
+    local anytls_tag="${tag// /-}"
+    local anytls_encoded_tag
+    anytls_encoded_tag=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${anytls_tag}', safe=''))" 2>/dev/null || echo "${anytls_tag}")
+    anytls_url="anytls://${PASSWORD}@${host}:${port}?sni=${sni}&jls_username=${USERNAME}&jls_password=${PASSWORD}&insecure=false#${anytls_encoded_tag}"
+  fi
+
+  # 将订阅写入文件，方便之后查看、systemd 日志也会引用这个路径
+  {
+    if $sq_enabled; then
+      echo "$sq_url"
+    fi
+    if $anytls_enabled; then
+      echo "$anytls_url"
+    fi
+  } > "${INSTALL_DIR}/subscription.txt"
+
+  # 简化输出：直接显示订阅链接
   echo ""
-  echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
-  echo -e "${CYAN}  安装完成! 以下是你的订阅信息:${NC}"
-  echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
+  if $sq_enabled; then
+    echo "$sq_url"
+  fi
+  if $anytls_enabled; then
+    echo "$anytls_url"
+  fi
   echo ""
-  echo -e "  ${YELLOW}订阅链接:${NC}"
-  echo ""
-  echo -e "  ${GREEN}${sub_url}${NC}"
-  echo ""
-  echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
-  echo ""
-  echo -e "  ${YELLOW}用户名:${NC} ${USERNAME}"
-  echo -e "  ${YELLOW}密码:  ${NC} ${PASSWORD}"
-  echo -e "  ${YELLOW}端口:  ${NC} ${port}"
-  echo -e "  ${YELLOW}SNI:   ${NC} ${sni}"
+
+  log_info "以上订阅链接已备份到 ${INSTALL_DIR}/subscription.txt"
+  log_info "随时用 cat ${INSTALL_DIR}/subscription.txt 查看"
   echo ""
   echo -e "  ${YELLOW}管理命令:${NC}"
   echo -e "    systemctl status   ${SERVICE_NAME}    # 查看状态"
   echo -e "    systemctl restart  ${SERVICE_NAME}    # 重启服务"
   echo -e "    systemctl stop     ${SERVICE_NAME}    # 停止服务"
   echo -e "    journalctl -u ${SERVICE_NAME} -f      # 查看日志"
-  echo -e "    ${BIN_PATH} -c ${CONFIG_PATH}         # 手动运行"
+  echo -e "    cat ${INSTALL_DIR}/subscription.txt   # 查看订阅"
   echo ""
 }
 
@@ -447,6 +584,8 @@ main() {
   log_info "安装目录: ${INSTALL_DIR}"
 
   stop_existing_process
+
+  prompt_install_options
 
   if [[ -n "${VERSION:-}" ]]; then
     TAG_NAME="$VERSION"

@@ -48,6 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/RealBikiniBottom/QuicProxy/master/l
 - Tun
 - Shadowquic
 - AnyTLS
+- AnyTLS-JLS
 - Trojan
 
 出站：
@@ -55,6 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/RealBikiniBottom/QuicProxy/master/l
 - Shadowquic （推荐）
 - Socks5
 - AnyTLS
+- AnyTLS-JLS
 - Trojan
 - Shadowsocks
 - Vmess

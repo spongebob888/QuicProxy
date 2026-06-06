@@ -68,6 +68,16 @@ rcgen = "0.14.7"
 flume = "0.12.0"
 tokio-util = "0.7.18"
 md5 = "0.8.0"
+digest = "0.10"
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+crc32fast = "1"
+hmac = "0.12"
+aead = "0.5"
+const-fnv1a-hash = "1.0"
+cfb-mode = "0.8"
+aes = "0.8"
+shadowsocks = { version = "1.23", features = ["aead-cipher-2022", "stream-cipher"] }
 [target.'cfg(target_os = "android")'.dependencies]
 tracing-android = "0.2.0"
 

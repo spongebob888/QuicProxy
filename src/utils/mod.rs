@@ -1,4 +1,6 @@
 use bytes::{Buf, BytesMut};
+use rand::Rng;
+use sha2::Digest;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -121,4 +123,32 @@ where
     B: AsyncRead + AsyncWrite + Unpin + ?Sized,
 {
     tokio::io::copy_bidirectional_with_sizes(a, b, BUFFER_SIZE, BUFFER_SIZE).await
+}
+
+pub fn rand_range<T>(range: std::ops::Range<T>) -> T
+where
+    T: rand::distributions::uniform::SampleUniform + std::cmp::PartialOrd,
+{
+    let mut rng = rand::thread_rng();
+    rng.gen_range(range)
+}
+
+pub fn rand_fill<T>(buf: &mut T)
+where
+    T: rand::Fill + ?Sized,
+{
+    let mut rng = rand::thread_rng();
+    buf.try_fill(&mut rng).unwrap_or(());
+}
+
+pub fn sha256(bytes: &[u8]) -> Vec<u8> {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(bytes);
+    hasher.finalize().to_vec()
+}
+
+pub fn md5(bytes: &[u8]) -> Vec<u8> {
+    let mut hasher = md5::Context::new();
+    hasher.consume(bytes);
+    hasher.compute().to_vec()
 }

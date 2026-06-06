@@ -15,7 +15,7 @@
       ],
       "idle_timeout": 100,
       "mtu": 1424,
-      "auto_route": true
+      "auto_route": false
     },
     "sq_inbound": {
       "type": "shadowquic",

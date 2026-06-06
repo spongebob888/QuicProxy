@@ -350,6 +350,10 @@ pub struct OutboundConfig {
     pub cache: Option<String>,
     pub tls: Option<OutboundTlsConfig>,
     pub transport: Option<TransportConfig>,
+
+    /// 禁用多路复用：每个代理连接独占一条 TLS 连接（Session）
+    #[serde(default = "default_true")]
+    pub disable_mux: bool,
 }
 
 /// Cache configuration for selector outbound

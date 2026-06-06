@@ -564,6 +564,7 @@ pub struct AnytlsClient {
     connect_timeout: Duration,
     bind_interface: Option<String>,
     dns_server_name: Option<String>,
+    disable_mux: bool,
 
     active_sessions: Mutex<Vec<Arc<Session>>>,
     idle_sessions: Arc<Mutex<Vec<IdleSession>>>,
@@ -586,6 +587,7 @@ impl AnytlsClient {
         connect_timeout: Duration,
         bind_interface: Option<String>,
         dns_server_name: Option<String>,
+        disable_mux: bool,
     ) -> Result<Self> {
         let mut hasher = Sha256::new();
         hasher.update(password.as_bytes());
@@ -618,6 +620,7 @@ impl AnytlsClient {
             connect_timeout,
             bind_interface,
             dns_server_name,
+            disable_mux,
             active_sessions: Mutex::new(Vec::new()),
             idle_sessions,
             session_seq: AtomicU64::new(0),
@@ -664,6 +667,11 @@ impl AnytlsClient {
     }
 
     async fn get_session(&self) -> Result<Arc<Session>> {
+        // 禁用多路复用时，每个连接都创建独立 Session
+        if self.disable_mux {
+            return self.create_session().await;
+        }
+
         // Try to get an idle session (prefer highest seq)
         {
             let mut idle = self.idle_sessions.lock().await;
@@ -722,7 +730,8 @@ impl AnytlsClient {
             let mut active = self.active_sessions.lock().await;
             active.retain(|s| s.session_seq != session.session_seq);
         }
-        if session.is_dead() {
+        // 禁用多路复用时，不将 session 放入空闲池，直接让其消亡
+        if self.disable_mux || session.is_dead() {
             return;
         }
         self.idle_sessions.lock().await.push(IdleSession {
@@ -953,6 +962,7 @@ impl AnytlsOutbound {
             connect_timeout,
             cfg.bind_interface.clone(),
             cfg.dns.clone(),
+            cfg.disable_mux,
         )?;
 
         Ok(Arc::new(Self {
@@ -1645,6 +1655,7 @@ mod tests {
             Duration::from_secs(10),
             None,
             None,
+            false,
         )
         .expect("create client");
 
@@ -2265,6 +2276,7 @@ mod tests {
                 jls_password: None,
             }),
             transport: None,
+            disable_mux: false,
         };
 
         let outbound = AnytlsOutbound::new("test_anytls_out".to_string(), &cfg)
@@ -2358,6 +2370,7 @@ mod tests {
                 jls_password: None,
             }),
             transport: None,
+            disable_mux: false,
         };
 
         let outbound = AnytlsOutbound::new("test_anytls_out".to_string(), &cfg)

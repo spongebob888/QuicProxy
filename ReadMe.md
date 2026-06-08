@@ -91,7 +91,7 @@ Full Cone，使用 UDP Extension，完美解决代理 QUIC 速度慢等历史遗
 
 使用开放友好的 MIT 开源协议，随意修改且随意闭源，想干啥就干啥。
 
-免费提供后端 API 控制用户，见 [API](https://github.com/RealBikiniBottom/QuicProxy/tree/master/src/api)，支持删除、添加、获取使用流量等信息。
+免费提供后端 API 控制用户，见 [API](https://github.com/spongebob888/shadowquic/blob/main/document/api.md)，支持删除或添加用户，并获取流量情况。
 
 我们保证：所有项目都不会出现机场、VPN、VPS、IP 代理等将自己客户引流到其他竞争对手的广告。
 

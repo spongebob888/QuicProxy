@@ -85,7 +85,8 @@ pub fn get_default_dns() -> Result<Arc<dyn AnyDNS>> {
 
 pub async fn resolve_domain(domain: &str, dns_server: Arc<dyn AnyDNS>) -> Result<IpAddr> {
     let now = Instant::now();
-    let res = dns_server.lookup(domain, false).await?;
+    let outbound = dns_server.default_outbound();
+    let res = dns_server.lookup(domain, false, &outbound).await?;
 
     let ip = res
         .first()
@@ -269,16 +270,27 @@ pub trait AnyDNS: Send + Sync + 'static {
     fn tag(&self) -> &str;
     fn cache(&self) -> &DnsCache;
 
-    async fn exchange_query(&self, domain: &str, qtype: QTYPE) -> Result<Vec<u8>> {
+    async fn exchange_query(
+        &self,
+        domain: &str,
+        qtype: QTYPE,
+        outbound: &Arc<dyn AnyOutbound>,
+    ) -> Result<Vec<u8>> {
         let packet = build_dns_query_packet(domain, qtype)?;
         let packet_bytes = packet
             .build_bytes_vec()
             .map_err(|e| anyhow::anyhow!("Failed to build DNS query packet: {e}"))?
             .to_vec();
-        self.exchange(&packet_bytes).await
+        self.exchange_with_outbound(&packet_bytes, outbound.clone())
+            .await
     }
 
-    async fn lookup_with_type(&self, domain: &str, qtype: QTYPE) -> Result<Vec<IpAddr>> {
+    async fn lookup_with_type(
+        &self,
+        domain: &str,
+        qtype: QTYPE,
+        outbound: &Arc<dyn AnyOutbound>,
+    ) -> Result<Vec<IpAddr>> {
         let cache_key = match qtype {
             QTYPE::TYPE(TYPE::A) => format!("{}:A", domain),
             QTYPE::TYPE(TYPE::AAAA) => format!("{}:AAAA", domain),
@@ -299,7 +311,7 @@ pub trait AnyDNS: Send + Sync + 'static {
             }
         }
 
-        let response_bytes = self.exchange_query(domain, qtype).await?;
+        let response_bytes = self.exchange_query(domain, qtype, outbound).await?;
         let packet = match Packet::parse(&response_bytes) {
             Ok(p) => p,
             Err(e) => bail!(e),
@@ -353,7 +365,12 @@ pub trait AnyDNS: Send + Sync + 'static {
         Ok(ips)
     }
 
-    async fn lookup(&self, domain: &str, use_ipv6: bool) -> Result<Vec<IpAddr>> {
+    async fn lookup(
+        &self,
+        domain: &str,
+        use_ipv6: bool,
+        outbound: &Arc<dyn AnyOutbound>,
+    ) -> Result<Vec<IpAddr>> {
         if let Ok(ip) = IpAddr::from_str(domain) {
             return Ok(vec![ip]);
         }
@@ -364,12 +381,14 @@ pub trait AnyDNS: Send + Sync + 'static {
             use_ipv6
         );
         if !use_ipv6 {
-            return self.lookup_with_type(domain, QTYPE::TYPE(TYPE::A)).await;
+            return self
+                .lookup_with_type(domain, QTYPE::TYPE(TYPE::A), outbound)
+                .await;
         }
 
         let (v4_res, v6_res) = tokio::join!(
-            self.lookup_with_type(domain, QTYPE::TYPE(TYPE::A)),
-            self.lookup_with_type(domain, QTYPE::TYPE(TYPE::AAAA))
+            self.lookup_with_type(domain, QTYPE::TYPE(TYPE::A), outbound),
+            self.lookup_with_type(domain, QTYPE::TYPE(TYPE::AAAA), outbound)
         );
 
         match (v4_res, v6_res) {
@@ -399,9 +418,13 @@ pub trait AnyDNS: Send + Sync + 'static {
         }
     }
 
-    async fn lookup_ipv4(&self, domain: &str) -> Result<Option<Ipv4Addr>> {
+    async fn lookup_ipv4(
+        &self,
+        domain: &str,
+        outbound: &Arc<dyn AnyOutbound>,
+    ) -> Result<Option<Ipv4Addr>> {
         Ok(self
-            .lookup_with_type(domain, QTYPE::TYPE(TYPE::A))
+            .lookup_with_type(domain, QTYPE::TYPE(TYPE::A), outbound)
             .await?
             .into_iter()
             .find_map(|ip| match ip {
@@ -410,9 +433,13 @@ pub trait AnyDNS: Send + Sync + 'static {
             }))
     }
 
-    async fn lookup_ipv6(&self, domain: &str) -> Result<Option<Ipv6Addr>> {
+    async fn lookup_ipv6(
+        &self,
+        domain: &str,
+        outbound: &Arc<dyn AnyOutbound>,
+    ) -> Result<Option<Ipv6Addr>> {
         Ok(self
-            .lookup_with_type(domain, QTYPE::TYPE(TYPE::AAAA))
+            .lookup_with_type(domain, QTYPE::TYPE(TYPE::AAAA), outbound)
             .await?
             .into_iter()
             .find_map(|ip| match ip {
@@ -421,13 +448,23 @@ pub trait AnyDNS: Send + Sync + 'static {
             }))
     }
 
-    async fn lookup_ipv4_response(&self, domain: &str) -> Result<Vec<u8>> {
-        let response_bytes = self.exchange_query(domain, QTYPE::TYPE(TYPE::A)).await?;
+    async fn lookup_ipv4_response(
+        &self,
+        domain: &str,
+        outbound: &Arc<dyn AnyOutbound>,
+    ) -> Result<Vec<u8>> {
+        let response_bytes = self.exchange_query(domain, QTYPE::TYPE(TYPE::A), outbound).await?;
         apply_ttl_to_response(&response_bytes, self.min_ttl(), self.max_ttl())
     }
 
-    async fn lookup_ipv6_response(&self, domain: &str) -> Result<Vec<u8>> {
-        let response_bytes = self.exchange_query(domain, QTYPE::TYPE(TYPE::AAAA)).await?;
+    async fn lookup_ipv6_response(
+        &self,
+        domain: &str,
+        outbound: &Arc<dyn AnyOutbound>,
+    ) -> Result<Vec<u8>> {
+        let response_bytes = self
+            .exchange_query(domain, QTYPE::TYPE(TYPE::AAAA), outbound)
+            .await?;
         apply_ttl_to_response(&response_bytes, self.min_ttl(), self.max_ttl())
     }
 
@@ -436,6 +473,17 @@ pub trait AnyDNS: Send + Sync + 'static {
     }
 
     async fn exchange(&self, packet_bytes: &[u8]) -> Result<Vec<u8>>;
+
+    async fn exchange_with_outbound(
+        &self,
+        packet_bytes: &[u8],
+        outbound: Arc<dyn AnyOutbound>,
+    ) -> Result<Vec<u8>> {
+        let _ = outbound;
+        self.exchange(packet_bytes).await
+    }
+
+    fn default_outbound(&self) -> Arc<dyn AnyOutbound>;
 
     async fn hijack_exchange(&self, packet_bytes: &[u8]) -> Result<Vec<u8>> {
         if self.reject_ipv6() {
@@ -559,6 +607,32 @@ impl AnyDNS for UdpDns {
         Ok(payload.to_vec())
     }
 
+    async fn exchange_with_outbound(
+        &self,
+        packet_bytes: &[u8],
+        outbound: Arc<dyn AnyOutbound>,
+    ) -> Result<Vec<u8>> {
+        let target = resolve_target(&self.address, self.dns_server()).await?;
+        let target = TargetAddr::Ip(target);
+        let socket = outbound.connect_packet(&target).await?;
+
+        let buf = bytes::Bytes::copy_from_slice(packet_bytes);
+
+        socket.send_to(buf, &SourceAddr::dummy(), &target).await?;
+
+        let (_, _, payload) =
+            tokio::time::timeout(outbound.connect_timeout(), socket.recv_from())
+                .await
+                .map_err(|_| anyhow!("DNS query timed out"))??;
+        socket.closer().close();
+
+        Ok(payload.to_vec())
+    }
+
+    fn default_outbound(&self) -> Arc<dyn AnyOutbound> {
+        self.outbound.clone()
+    }
+
     fn min_ttl(&self) -> Option<Duration> {
         self.min_ttl
     }
@@ -660,6 +734,38 @@ impl AnyDNS for HttpsDns {
         }
 
         Ok(response.body.to_vec())
+    }
+
+    async fn exchange_with_outbound(
+        &self,
+        packet_bytes: &[u8],
+        outbound: Arc<dyn AnyOutbound>,
+    ) -> Result<Vec<u8>> {
+        let mut headers = HeaderMap::new();
+        headers.insert("Content-Type", "application/dns-message".parse().unwrap());
+
+        let response = http_outbound::request_post_via_outbound(
+            outbound.clone(),
+            self.dns_server(),
+            &self.url,
+            outbound.connect_timeout(),
+            Some(&headers),
+            Bytes::copy_from_slice(packet_bytes),
+        )
+        .await?;
+
+        if !response.status.is_success() {
+            return Err(anyhow::anyhow!(
+                "DoH server returned error: {}",
+                response.status
+            ));
+        }
+
+        Ok(response.body.to_vec())
+    }
+
+    fn default_outbound(&self) -> Arc<dyn AnyOutbound> {
+        self.outbound.clone()
     }
 
     fn min_ttl(&self) -> Option<Duration> {
@@ -869,22 +975,35 @@ impl AnyDNS for FakeIPDNS {
         self.reject_ipv6
     }
 
-    async fn lookup_ipv4(&self, domain: &str) -> Result<Option<Ipv4Addr>> {
+    async fn lookup_ipv4(
+        &self,
+        domain: &str,
+        _outbound: &Arc<dyn AnyOutbound>,
+    ) -> Result<Option<Ipv4Addr>> {
         Ok(Some(self.resolve_v4(domain)?))
     }
 
-    async fn lookup_ipv6(&self, domain: &str) -> Result<Option<Ipv6Addr>> {
+    async fn lookup_ipv6(
+        &self,
+        domain: &str,
+        _outbound: &Arc<dyn AnyOutbound>,
+    ) -> Result<Option<Ipv6Addr>> {
         Ok(Some(self.resolve_v6(domain)?))
     }
 
-    async fn lookup_with_type(&self, domain: &str, qtype: QTYPE) -> Result<Vec<IpAddr>> {
+    async fn lookup_with_type(
+        &self,
+        domain: &str,
+        qtype: QTYPE,
+        _outbound: &Arc<dyn AnyOutbound>,
+    ) -> Result<Vec<IpAddr>> {
         match qtype {
             QTYPE::TYPE(TYPE::A) => {
-                let ip_opt = self.lookup_ipv4(domain).await?;
+                let ip_opt = self.lookup_ipv4(domain, _outbound).await?;
                 Ok(ip_opt.map(|ip| vec![IpAddr::V4(ip)]).unwrap_or_default())
             }
             QTYPE::TYPE(TYPE::AAAA) => {
-                let ip_opt = self.lookup_ipv6(domain).await?;
+                let ip_opt = self.lookup_ipv6(domain, _outbound).await?;
                 Ok(ip_opt.map(|ip| vec![IpAddr::V6(ip)]).unwrap_or_default())
             }
             _ => Ok(Vec::new()),
@@ -912,7 +1031,7 @@ impl AnyDNS for FakeIPDNS {
 
         match qtype {
             QTYPE::TYPE(TYPE::A) => {
-                if let Some(ip) = self.lookup_ipv4(&domain).await? {
+                if let Ok(ip) = self.resolve_v4(&domain) {
                     reply.answers.push(ResourceRecord {
                         name: question.qname.clone(),
                         class: CLASS::IN,
@@ -923,7 +1042,7 @@ impl AnyDNS for FakeIPDNS {
                 }
             }
             QTYPE::TYPE(TYPE::AAAA) => {
-                if let Some(ip) = self.lookup_ipv6(&domain).await? {
+                if let Ok(ip) = self.resolve_v6(&domain) {
                     reply.answers.push(ResourceRecord {
                         name: question.qname.clone(),
                         class: CLASS::IN,
@@ -963,6 +1082,10 @@ impl AnyDNS for FakeIPDNS {
             IpAddr::V4(ip) => self.ipv4_cidr.contains(ip),
             IpAddr::V6(ip) => self.ipv6_cidr.contains(ip),
         }
+    }
+
+    fn default_outbound(&self) -> Arc<dyn AnyOutbound> {
+        unimplemented!("FakeIPDNS does not have a default outbound; use lookup/exchange directly with an explicit outbound")
     }
 
     fn min_ttl(&self) -> Option<Duration> {

@@ -14,7 +14,7 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls;
 use tracing::debug;
 
-use crate::dns::resolve_str;
+use crate::dns::{get_dns_by_tag, get_default_dns};
 use crate::proxy::TargetAddr;
 use crate::proxy::outbound::{AnyOutbound, AnyStream};
 
@@ -63,7 +63,19 @@ async fn request_once_with_body(
         .port_or_known_default()
         .context("URL missing known port")?;
 
-    let target = TargetAddr::Ip(resolve_str(host, port, dns).await?);
+    let target = {
+        let dns_server = match dns {
+            Some(tag) => get_dns_by_tag(tag)?,
+            None => get_default_dns()?,
+        };
+        let ip = dns_server
+            .lookup(host, false, &outbound)
+            .await?
+            .into_iter()
+            .next()
+            .context("DNS lookup returned no results")?;
+        TargetAddr::Ip(std::net::SocketAddr::new(ip, port))
+    };
     let stream = outbound.connect_stream(&target).await?;
     let stream = maybe_wrap_tls(&url, host, stream).await?;
 

@@ -51,12 +51,18 @@ debug_build:
 	cargo build
 
 build-linux-cross:
-	cross build --release --target x86_64-unknown-linux-musl
+	DOCKER_DEFAULT_PLATFORM=linux/amd64 cross build --release --target x86_64-unknown-linux-musl
+
+build-linux-aarch64-cross:
+	DOCKER_DEFAULT_PLATFORM=linux/amd64 cross build --release --target aarch64-unknown-linux-musl
+
+build-linux-armv7-cross:
+	DOCKER_DEFAULT_PLATFORM=linux/amd64 cross build --release --target armv7-unknown-linux-musleabihf
 
 build-windows-cross:
-	cross build --release --target x86_64-pc-windows-gnu
+	DOCKER_DEFAULT_PLATFORM=linux/amd64 cross build --release --target x86_64-pc-windows-gnu
 
-deploy: build-linux-cross
+deploy: build-linux-all
 	bash ./src/premium/test/deploy_test.sh
 
 clean:

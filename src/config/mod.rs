@@ -40,6 +40,9 @@ pub struct ApiConfig {
     pub address: String,
     pub port: u16,
     pub password: String,
+    /// Web 端持久化数据文件路径（可选），用于跨浏览器/标签页共享状态
+    #[serde(default)]
+    pub persist_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

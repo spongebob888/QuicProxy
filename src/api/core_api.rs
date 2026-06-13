@@ -8,10 +8,7 @@ use crate::proxy::{
     router::get_router,
 };
 use crate::utils::http_outbound::request_via_outbound;
-use crate::{
-    config::RouterMode,
-    proxy::inbound::create_tcp_listener,
-};
+use crate::{config::RouterMode, proxy::inbound::create_tcp_listener};
 use axum::{
     Router,
     extract::{Query, State},
@@ -41,10 +38,12 @@ pub struct CoreApiState {
 
 // ─── Router 构建 ───
 
-use anyhow::{Result, bail};
 use crate::utils::shutdown;
+use anyhow::{Result, bail};
 
-pub async fn init_core_api(cfg: &crate::config::Config) -> Result<Option<tokio::sync::mpsc::Receiver<()>>> {
+pub async fn init_core_api(
+    cfg: &crate::config::Config,
+) -> Result<Option<tokio::sync::mpsc::Receiver<()>>> {
     let api = match &cfg.api {
         Some(r) => r.clone(),
         None => {
@@ -381,10 +380,15 @@ async fn get_trace(
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&headers, &state.password)?;
 
-    if let Ok(r) = get_outbound_info(&params.tag, state.observer.clone()).await {
-        return Ok(Json(r));
+    match get_outbound_info(&params.tag, state.observer.clone()).await {
+        Ok(r) => Ok(Json(r)),
+        Err(_) => {
+            state
+                .observer
+                .update_outbound_trace(&params.tag, 0, "", "", None, None);
+            Err(StatusCode::BAD_GATEWAY)
+        }
     }
-    Err(StatusCode::BAD_GATEWAY)
 }
 
 pub async fn get_outbound_info(

@@ -8,6 +8,7 @@ use tokio::sync::OnceCell;
 use tracing::info;
 use uuid::Uuid;
 
+use crate::proxy::outbound;
 use crate::utils::format_us;
 use crate::utils::now_timestamp;
 use crate::utils::shutdown;
@@ -227,8 +228,8 @@ pub struct OutboundTraceInfo {
     pub ip: String,
     pub loc: String,
     pub latency_us: u64,
-    pub uplink_path_stats: Option<crate::proxy::outbound::PathState>,
-    pub downlink_path_stats: Option<crate::proxy::outbound::PathState>,
+    pub uplink_path_stats: Option<outbound::PathState>,
+    pub downlink_path_stats: Option<outbound::PathState>,
 }
 
 use crate::proxy::SessionCloser;
@@ -471,8 +472,8 @@ impl Observer {
         latency_us: u64,
         ip: impl Into<String>,
         loc: impl Into<String>,
-        uplink_path_stats: Option<crate::proxy::outbound::PathState>,
-        downlink_path_stats: Option<crate::proxy::outbound::PathState>,
+        uplink_path_stats: Option<outbound::PathState>,
+        downlink_path_stats: Option<outbound::PathState>,
     ) {
         if let Some(node) = self.outbounds.get(tag) {
             node.stats.record_latency_us(latency_us);

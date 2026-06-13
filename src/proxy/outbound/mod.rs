@@ -385,6 +385,17 @@ pub trait AnyOutbound: Send + Sync {
 
         new_udp_socket(None, used_interface, Some(connect_to), None).await
     }
+    async fn get_uplink_state(&self) -> Option<PathState> {
+        None
+    }
+    async fn get_downlink_state(&self) -> Option<PathState> {
+        None
+    }
+}
+pub struct PathState {
+    pub packet_loss_rate: f32,
+    pub mtu: u16,
+    pub rtt: f32,
 }
 
 #[derive(Clone, Copy, Debug)]

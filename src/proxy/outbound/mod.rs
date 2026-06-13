@@ -17,6 +17,7 @@ use dashmap::DashMap;
 use direct::DirectOutbound;
 use dns::DnsOutbound;
 use selector::SelectorOutbound;
+use serde::Serialize;
 use shadowquic::ShadowQuicOutbound;
 use shadowsocks::ShadowsocksOutbound;
 use socks5::Socks5Outbound;
@@ -392,6 +393,7 @@ pub trait AnyOutbound: Send + Sync {
         None
     }
 }
+#[derive(Debug, Clone, Serialize)]
 pub struct PathState {
     pub packet_loss_rate: f32,
     pub mtu: u16,
